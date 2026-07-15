@@ -1,6 +1,6 @@
 # repo-swap.el
 
-Version 0.1.5
+Version 0.1.6
 
 `repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts, worktrees, or clones.
 
@@ -67,6 +67,14 @@ Then use:
   ;; Include recent files in the C-c b buffer switcher.
   (setq repo-swap-switch-buffer-include-recentf t)
 
+  ;; Recognize recent-file commands that call find-file directly, including
+  ;; consult-recent-file and counsel-recentf.  This is the default regexp.
+  (setq repo-swap-recentf-command-regexp
+        "\\(?:recentf\\|recent-file\\)")
+
+  ;; Log origin/source/target decisions to *Messages* while debugging.
+  (setq repo-swap-debug nil)
+
   :config
   (repo-swap-mode 1))
 ```
@@ -89,6 +97,9 @@ Then use:
 
 - `M-x repo-swap-refresh-recentf-integration`  
   Reinstall or remove the recentf wrapper after changing `repo-swap-integrate-recentf` while Repo Swap is already running.
+
+- `M-x repo-swap-debug-recentf-target`  
+  Choose a recent file and report the invoking root, source checkout, selected target, current `recentf-menu-action`, and whether redirection would occur.
 
 Ordinary `C-x b` remains unchanged.
 
@@ -128,10 +139,53 @@ If it exists, recentf opens that feature-work copy. If the selected recent file 
 
 The current checkout is captured before recentf opens its dialog, so the dialog buffer itself does not lose the destination context.
 
+Repo Swap also recognizes recent-file commands that bypass `recentf-menu-action`
+and call `find-file` directly.  By default, a command is treated as a recent-file
+opener when its command name contains `recentf` or `recent-file`, and the path it
+opens is actually present in `recentf-list`.  This covers common commands such as
+`consult-recent-file` and `counsel-recentf` without changing ordinary
+`find-file` behavior.
+
 If you change the setting after Repo Swap is already enabled:
 
 ```elisp
 (setq repo-swap-integrate-recentf t)
+(repo-swap-refresh-recentf-integration)
+```
+
+
+## Debugging recentf redirection
+
+Temporarily enable decision logging:
+
+```elisp
+(setq repo-swap-debug t)
+```
+
+Then invoke the recent-file command again and inspect `*Messages*`.  A decision
+line includes the command, preferred checkout, source checkout, exact recentf
+path, and final target.
+
+You can also inspect a path without opening it:
+
+```text
+M-x repo-swap-debug-recentf-target
+```
+
+For a `ShapeShift` entry opened while working in `ShapeShift_featureWork`, the
+important fields should resemble:
+
+```text
+preferred=.../ShapeShift_featureWork/
+source=.../ShapeShift/
+target=.../ShapeShift_featureWork/<same-relative-file>
+redirected=t
+```
+
+After replacing or reloading `repo-swap.el`, reapply the advice without
+restarting Emacs:
+
+```elisp
 (repo-swap-refresh-recentf-integration)
 ```
 
@@ -218,7 +272,7 @@ Repo Swap uses those loaded contexts when available and maintains its own lightw
 
 ## Running tests
 
-The suite now contains 14 ERT tests:
+The suite now contains 19 ERT tests:
 
 ```bat
 "C:\Users\user\Downloads\emacs-28.2\bin\emacs.exe" -Q --batch ^
@@ -228,6 +282,13 @@ The suite now contains 14 ERT tests:
 ```
 
 ## Changelog
+
+### 0.1.6
+
+- Preserve the checkout active before the recent-file command instead of trusting the action-time buffer.
+- Support recent-file commands such as `consult-recent-file` and `counsel-recentf` that call `find-file` directly.
+- Keep ordinary `find-file` exact even when its path is already in `recentf-list`.
+- Added `repo-swap-debug`, `repo-swap-debug-recentf-target`, and five ERT regression tests.
 
 ### 0.1.5
 

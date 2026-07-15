@@ -329,6 +329,96 @@
       (should (equal called-file file))
       (should (equal called-root "c:/example-root/")))))
 
+
+
+(ert-deftest repo-swap-test-command-origin-captures-recentf-like-command ()
+  "The pre-command hook uses the cached buffer root for recent-file commands."
+  (let ((this-command 'consult-recent-file)
+        (repo-swap--buffer-root "j:/Projects/ShapeShift_featureWork/")
+        (repo-swap--command-origin-root nil))
+    (cl-letf (((symbol-function 'repo-swap--current-root-noerror)
+               (lambda () (error "Cached buffer root should have been used"))))
+      (repo-swap--capture-command-origin)
+      (should (equal repo-swap--command-origin-root
+                     "j:/Projects/ShapeShift_featureWork/")))))
+
+(ert-deftest repo-swap-test-command-origin-clears-for-unrelated-command ()
+  "An unrelated command clears stale recentf origin without scanning the root."
+  (let ((this-command 'next-line)
+        (repo-swap--buffer-root "j:/Projects/ShapeShift_featureWork/")
+        (repo-swap--command-origin-root "c:/Projects/ShapeShift/"))
+    (cl-letf (((symbol-function 'repo-swap--current-root-noerror)
+               (lambda () (error "Unrelated commands must not resolve roots"))))
+      (repo-swap--capture-command-origin)
+      (should-not repo-swap--command-origin-root))))
+
+(ert-deftest repo-swap-test-recentf-preferred-root-keeps-command-origin ()
+  "The invoking checkout wins over the buffer active when the action runs."
+  (let ((repo-swap--command-origin-root "j:/Projects/ShapeShift_featureWork/")
+        (repo-swap--recentf-origin-root "c:/Projects/ShapeShift/"))
+    (cl-letf (((symbol-function 'repo-swap--current-root-noerror)
+               (lambda () "c:/Projects/ShapeShift/")))
+      (should
+       (equal (repo-swap--recentf-preferred-root)
+              "j:/Projects/ShapeShift_featureWork/")))))
+
+(ert-deftest repo-swap-test-find-file-advice-redirects-consult-recent-file ()
+  "A recent-file command that calls find-file directly is redirected."
+  (let* ((sandbox (make-temp-file "repo-swap-test-" t))
+         (root-a (expand-file-name "ShapeShift/" sandbox))
+         (root-b (expand-file-name "ShapeShift_featureWork/" sandbox))
+         (relative "Assets/Lua/testmodule.lua")
+         (file-a (expand-file-name relative root-a))
+         (file-b (expand-file-name relative root-b))
+         (repo-swap-mode t)
+         (repo-swap-integrate-recentf t)
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil)
+         (repo-swap--command-origin-root nil)
+         (repo-swap--recentf-origin-root nil)
+         (repo-swap--redirecting-recentf nil)
+         (recentf-list nil)
+         (this-command 'consult-recent-file)
+         opened)
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return 'a'\n")
+          (repo-swap-test--write-file file-b "return 'b'\n")
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (setq repo-swap--command-origin-root
+                (repo-swap--canonical-directory root-b))
+          (setq recentf-list (list file-a))
+          (repo-swap--find-file-around
+           (lambda (target &rest _args) (setq opened target))
+           file-a)
+          (should (repo-swap--same-file-name-p opened file-b)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-find-file-advice-leaves-ordinary-find-file-alone ()
+  "Normal find-file is exact even when its path happens to be in recentf-list."
+  (let* ((sandbox (make-temp-file "repo-swap-test-" t))
+         (file (expand-file-name "ShapeShift/sample.lua" sandbox))
+         (repo-swap-mode t)
+         (repo-swap-integrate-recentf t)
+         (repo-swap--redirecting-recentf nil)
+         (recentf-list nil)
+         (this-command 'find-file)
+         opened)
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file "return true\n")
+          (setq recentf-list (list file))
+          (repo-swap--find-file-around
+           (lambda (target &rest _args) (setq opened target))
+           file)
+          (should (repo-swap--same-file-name-p opened file)))
+      (delete-directory sandbox t))))
+
 (provide 'repo-swap-tests)
 
 ;;; repo-swap-tests.el ends here
