@@ -1,6 +1,6 @@
 ;;; repo-swap.el --- Jump to the same relative file in another checkout -*- lexical-binding: t; -*-
 
-;; Version: 0.1.9
+;; Version: 0.1.10
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: files, convenience, vc
 
@@ -28,7 +28,7 @@
   :group 'files
   :prefix "repo-swap-")
 
-(defconst repo-swap-version "0.1.9"
+(defconst repo-swap-version "0.1.10"
   "Current repo-swap package version.")
 
 (defcustom repo-swap-kill-old-buffer nil
@@ -1151,14 +1151,26 @@ preferred when it exists."
       (when repo-swap-remember-roots
         (repo-swap--remember-root repo-swap--buffer-root)))))
 
-(defvar repo-swap-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c r s") #'repo-swap-open-same-file)
-    (define-key map (kbd "C-c r r") #'repo-swap-remember-current-root)
-    (define-key map (kbd "C-c r l") #'repo-swap-list-known-roots)
-    (define-key map (kbd "C-c b") #'repo-swap-switch-buffer-or-recentf)
-    map)
+(defvar repo-swap-mode-map (make-sparse-keymap)
   "Keymap for `repo-swap-mode'.")
+
+(defun repo-swap--install-key-bindings ()
+  "Install Repo Swap bindings into `repo-swap-mode-map'.
+
+This is deliberately called at top level rather than relying only on the
+`defvar' initializer.  `defvar' does not reevaluate its initializer when an
+older Repo Swap version has already created the keymap, so newly added keys
+would otherwise remain missing after `load-file'."
+  (define-key repo-swap-mode-map (kbd "C-c r s")
+              #'repo-swap-open-same-file)
+  (define-key repo-swap-mode-map (kbd "C-c r r")
+              #'repo-swap-remember-current-root)
+  (define-key repo-swap-mode-map (kbd "C-c r l")
+              #'repo-swap-list-known-roots)
+  (define-key repo-swap-mode-map (kbd "C-c b")
+              #'repo-swap-switch-buffer-or-recentf))
+
+(repo-swap--install-key-bindings)
 
 ;;;###autoload
 (define-minor-mode repo-swap-mode

@@ -526,6 +526,18 @@
   "The detailed integration diagnostic is available through M-x."
   (should (commandp 'repo-swap-debug-integration)))
 
+
+(ert-deftest repo-swap-test-key-bindings-reinstalled-after-reload ()
+  "New bindings are added even when an older keymap already exists."
+  (let ((repo-swap-mode-map (make-sparse-keymap)))
+    ;; Simulate a keymap retained from a version before `C-c b' existed.
+    (define-key repo-swap-mode-map (kbd "C-c r s")
+                #'repo-swap-open-same-file)
+    (should-not (lookup-key repo-swap-mode-map (kbd "C-c b")))
+    (repo-swap--install-key-bindings)
+    (should (eq (lookup-key repo-swap-mode-map (kbd "C-c b"))
+                #'repo-swap-switch-buffer-or-recentf))))
+
 (provide 'repo-swap-tests)
 
 ;;; repo-swap-tests.el ends here

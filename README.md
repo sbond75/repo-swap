@@ -1,6 +1,6 @@
 # repo-swap.el
 
-Version 0.1.9
+Version 0.1.10
 
 `repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts, worktrees, or clones.
 
@@ -313,7 +313,7 @@ Repo Swap uses those loaded contexts when available and maintains its own lightw
 
 ## Running tests
 
-The suite now contains 27 ERT tests:
+The suite now contains 28 ERT tests:
 
 ```bat
 "C:\Users\user\Downloads\emacs-28.2\bin\emacs.exe" -Q --batch ^
@@ -322,7 +322,36 @@ The suite now contains 27 ERT tests:
   -f ert-run-tests-batch-and-exit
 ```
 
+## Reloading after an upgrade
+
+Repo Swap reapplies its key bindings every time `repo-swap.el` is loaded.  This
+matters because Emacs `defvar` retains an existing keymap across reloads.  In
+0.1.9 and earlier, upgrading from a version created before `C-c b` could leave
+the command unbound until Emacs restarted or the key was installed manually.
+
+After replacing the file, this is sufficient:
+
+```elisp
+(load-file (expand-file-name "repo-swap/repo-swap.el"
+                             user-emacs-directory))
+```
+
+Verify the binding with:
+
+```elisp
+(key-binding (kbd "C-c b"))
+```
+
+It should return `repo-swap-switch-buffer-or-recentf` while
+`repo-swap-mode` is enabled.
+
 ## Changelog
+
+### 0.1.10
+
+- Fixed `C-c b` remaining undefined after reloading over an older Repo Swap version.
+- Reapply all minor-mode key bindings on every package load instead of only when `repo-swap-mode-map` is first created.
+- Added a reload regression test, bringing the suite to 28 tests.
 
 ### 0.1.9
 
