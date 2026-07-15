@@ -2,6 +2,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'recentf)
 (require 'repo-swap)
 
 (defun repo-swap-test--write-file (file text)
@@ -362,8 +363,8 @@
        (equal (repo-swap--recentf-preferred-root)
               "j:/Projects/ShapeShift_featureWork/")))))
 
-(ert-deftest repo-swap-test-find-file-advice-redirects-consult-recent-file ()
-  "A recent-file command that calls find-file directly is redirected."
+(ert-deftest repo-swap-test-find-file-noselect-advice-redirects-consult-recent-file ()
+  "A recent-file command's low-level file open is redirected."
   (let* ((sandbox (make-temp-file "repo-swap-test-" t))
          (root-a (expand-file-name "ShapeShift/" sandbox))
          (root-b (expand-file-name "ShapeShift_featureWork/" sandbox))
@@ -377,11 +378,10 @@
          (repo-swap-include-sibling-roots nil)
          (repo-swap-use-modpatch-contexts nil)
          (repo-swap--known-roots nil)
-         (repo-swap--command-origin-root nil)
-         (repo-swap--recentf-origin-root nil)
+         (repo-swap--active-recentf-origin-root nil)
+         (repo-swap--active-recentf-command nil)
          (repo-swap--redirecting-recentf nil)
          (recentf-list nil)
-         (this-command 'consult-recent-file)
          opened)
     (unwind-protect
         (progn
@@ -390,34 +390,56 @@
           (setq repo-swap--known-roots
                 (mapcar #'repo-swap--canonical-directory
                         (list root-a root-b)))
-          (setq repo-swap--command-origin-root
+          (setq repo-swap--active-recentf-origin-root
                 (repo-swap--canonical-directory root-b))
+          (setq repo-swap--active-recentf-command 'consult-recent-file)
           (setq recentf-list (list file-a))
-          (repo-swap--find-file-around
+          (repo-swap--find-file-noselect-around
            (lambda (target &rest _args) (setq opened target))
            file-a)
           (should (repo-swap--same-file-name-p opened file-b)))
       (delete-directory sandbox t))))
 
-(ert-deftest repo-swap-test-find-file-advice-leaves-ordinary-find-file-alone ()
-  "Normal find-file is exact even when its path happens to be in recentf-list."
+(ert-deftest repo-swap-test-find-file-noselect-advice-leaves-ordinary-find-file-alone ()
+  "A low-level open outside a retained recentf command remains exact."
   (let* ((sandbox (make-temp-file "repo-swap-test-" t))
          (file (expand-file-name "ShapeShift/sample.lua" sandbox))
          (repo-swap-mode t)
          (repo-swap-integrate-recentf t)
+         (repo-swap--active-recentf-origin-root nil)
          (repo-swap--redirecting-recentf nil)
          (recentf-list nil)
-         (this-command 'find-file)
          opened)
     (unwind-protect
         (progn
           (repo-swap-test--write-file file "return true\n")
           (setq recentf-list (list file))
-          (repo-swap--find-file-around
+          (repo-swap--find-file-noselect-around
            (lambda (target &rest _args) (setq opened target))
            file)
           (should (repo-swap--same-file-name-p opened file)))
       (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-recentf-command-around-retains-origin-dynamically ()
+  "The origin survives for the complete dynamic extent of a recentf command."
+  (let ((repo-swap--buffer-root "j:/Projects/ShapeShift_featureWork/")
+        (repo-swap--active-recentf-origin-root nil)
+        (repo-swap--active-recentf-command nil)
+        (this-command 'consult-recent-file)
+        seen-root
+        seen-command)
+    (repo-swap--recentf-command-around
+     (lambda ()
+       (setq seen-root repo-swap--active-recentf-origin-root)
+       (setq seen-command repo-swap--active-recentf-command)))
+    (should (equal seen-root "j:/Projects/ShapeShift_featureWork/"))
+    (should (eq seen-command 'consult-recent-file))))
+
+(ert-deftest repo-swap-test-version-command-reports-current-version ()
+  "The interactive version command identifies the loaded build."
+  (should (equal repo-swap-version "0.1.7"))
+  (should (commandp 'repo-swap-version))
+  (should (equal (repo-swap-version) "0.1.7")))
 
 (provide 'repo-swap-tests)
 

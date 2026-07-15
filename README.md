@@ -1,6 +1,6 @@
 # repo-swap.el
 
-Version 0.1.6
+Version 0.1.7
 
 `repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts, worktrees, or clones.
 
@@ -67,12 +67,22 @@ Then use:
   ;; Include recent files in the C-c b buffer switcher.
   (setq repo-swap-switch-buffer-include-recentf t)
 
-  ;; Recognize recent-file commands that call find-file directly, including
-  ;; consult-recent-file and counsel-recentf.  This is the default regexp.
+  ;; Recognize loaded recent-file commands by name.  This is the default.
   (setq repo-swap-recentf-command-regexp
         "\\(?:recentf\\|recent-file\\)")
 
-  ;; Log origin/source/target decisions to *Messages* while debugging.
+  ;; Explicit recent-file command entry points retained across minibuffer use.
+  ;; Loaded matching commands are also discovered automatically.
+  (setq repo-swap-recentf-command-functions
+        '(recentf-open
+          recentf-open-files
+          recentf-open-more-files
+          recentf-open-most-recent-file
+          consult-recent-file
+          counsel-recentf
+          helm-recentf))
+
+  ;; Log command entry and origin/source/target decisions to *Messages*.
   (setq repo-swap-debug nil)
 
   :config
@@ -100,6 +110,9 @@ Then use:
 
 - `M-x repo-swap-debug-recentf-target`  
   Choose a recent file and report the invoking root, source checkout, selected target, current `recentf-menu-action`, and whether redirection would occur.
+
+- `M-x repo-swap-version`  
+  Report the loaded Repo Swap version, exact source file, recentf integration state, and number of advised recent-file commands.
 
 Ordinary `C-x b` remains unchanged.
 
@@ -139,12 +152,18 @@ If it exists, recentf opens that feature-work copy. If the selected recent file 
 
 The current checkout is captured before recentf opens its dialog, so the dialog buffer itself does not lose the destination context.
 
-Repo Swap also recognizes recent-file commands that bypass `recentf-menu-action`
-and call `find-file` directly.  By default, a command is treated as a recent-file
-opener when its command name contains `recentf` or `recent-file`, and the path it
-opens is actually present in `recentf-list`.  This covers common commands such as
-`consult-recent-file` and `counsel-recentf` without changing ordinary
-`find-file` behavior.
+Repo Swap also recognizes recent-file commands that bypass
+`recentf-menu-action`.  It wraps loaded recent-file entry commands for their
+entire dynamic execution, so the checkout active before the completion UI opens
+survives recursive minibuffer commands.  The eventual low-level
+`find-file-noselect` call is redirected only when its path is actually present
+in `recentf-list`.  This covers `find-file`, `find-file-other-window`, Consult,
+Counsel, Helm, and similar front ends without changing ordinary file opens.
+
+Known entry points are listed in `repo-swap-recentf-command-functions`, and
+loaded interactive commands whose names match
+`repo-swap-recentf-command-regexp` are discovered automatically.  Add a custom
+front end to that list and refresh the integration when necessary.
 
 If you change the setting after Repo Swap is already enabled:
 
@@ -162,9 +181,10 @@ Temporarily enable decision logging:
 (setq repo-swap-debug t)
 ```
 
-Then invoke the recent-file command again and inspect `*Messages*`.  A decision
-line includes the command, preferred checkout, source checkout, exact recentf
-path, and final target.
+Then invoke the recent-file command again and inspect `*Messages*`.  You should
+first see an `entered command=... origin=...` line.  A later decision line
+includes the command, preferred checkout, source checkout, exact recentf path,
+and final target.
 
 You can also inspect a path without opening it:
 
@@ -188,6 +208,15 @@ restarting Emacs:
 ```elisp
 (repo-swap-refresh-recentf-integration)
 ```
+
+Confirm the exact loaded build and path with:
+
+```text
+M-x repo-swap-version
+```
+
+Version 0.1.7 also reports how many recent-file commands currently carry the
+origin-preserving advice.
 
 ## Combined buffer/recent-file switcher
 
@@ -272,7 +301,7 @@ Repo Swap uses those loaded contexts when available and maintains its own lightw
 
 ## Running tests
 
-The suite now contains 19 ERT tests:
+The suite now contains 21 ERT tests:
 
 ```bat
 "C:\Users\user\Downloads\emacs-28.2\bin\emacs.exe" -Q --batch ^
@@ -282,6 +311,15 @@ The suite now contains 19 ERT tests:
 ```
 
 ## Changelog
+
+### 0.1.7
+
+- Keep the invoking checkout dynamically bound for the complete recent-file command, including recursive minibuffer sessions.
+- Redirect at `find-file-noselect`, covering `find-file-other-window` and completion front ends that bypass `recentf-menu-action`.
+- Automatically advise loaded recent-file commands and refresh advice after libraries load.
+- Added `M-x repo-swap-version`, including source path and recentf-advice status.
+- Fixed the ERT harness so `recentf-list` is dynamically bound under lexical binding.
+- Expanded the suite to 21 tests.
 
 ### 0.1.6
 

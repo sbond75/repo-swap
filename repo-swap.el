@@ -1,6 +1,6 @@
 ;;; repo-swap.el --- Jump to the same relative file in another checkout -*- lexical-binding: t; -*-
 
-;; Version: 0.1.6
+;; Version: 0.1.7
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: files, convenience, vc
 
@@ -27,6 +27,9 @@
   "Jump between equivalent files in sibling checkouts."
   :group 'files
   :prefix "repo-swap-")
+
+(defconst repo-swap-version "0.1.7"
+  "Current repo-swap package version.")
 
 (defcustom repo-swap-kill-old-buffer nil
   "Whether `repo-swap-open-same-file' kills the original buffer.
@@ -145,6 +148,28 @@ also be opening a path currently present in `recentf-list', so ordinary
   :type 'regexp
   :group 'repo-swap)
 
+(defcustom repo-swap-recentf-command-functions
+  '(recentf-open
+    recentf-open-files
+    recentf-open-more-files
+    recentf-open-most-recent-file
+    consult-recent-file
+    counsel-recentf
+    helm-recentf)
+  "Commands whose entire execution should retain the invoking checkout.
+
+Repo Swap advises loaded functions in this list, plus loaded interactive
+commands whose names match `repo-swap-recentf-command-regexp'.  Retaining the
+origin for the command's complete dynamic extent is important because
+completion front ends enter a recursive minibuffer; by the time they open a
+file, `this-command' may be a minibuffer command rather than the original
+recent-file command.
+
+After adding a command at runtime, call
+`repo-swap-refresh-recentf-integration'."
+  :type '(repeat function)
+  :group 'repo-swap)
+
 (defcustom repo-swap-debug nil
   "When non-nil, log recentf redirection decisions to *Messages*."
   :type 'boolean
@@ -160,7 +185,16 @@ also be opening a path currently present in `recentf-list', so ordinary
   "Checkout root captured when a built-in recentf command opened a dialog.")
 
 (defvar repo-swap--command-origin-root nil
-  "Checkout root active immediately before the current interactive command.")
+  "Checkout root captured for compatibility with older integration paths.")
+
+(defvar repo-swap--active-recentf-origin-root nil
+  "Dynamically bound checkout root for an active recent-file command.")
+
+(defvar repo-swap--active-recentf-command nil
+  "Dynamically bound recent-file command currently opening a file.")
+
+(defvar repo-swap--advised-recentf-commands nil
+  "Recent-file commands currently carrying repo-swap around advice.")
 
 (defvar repo-swap--redirecting-recentf nil
   "Non-nil while repo-swap is delegating an already redirected file open.")
@@ -551,11 +585,12 @@ expanded path."
     #'find-file))
 
 (defun repo-swap--capture-command-origin ()
-  "Remember the checkout before a recent-file-like command runs.
+  "Capture a recent-file command origin for compatibility and diagnostics.
 
-For unrelated commands, clear the prior value.  This keeps the global
-`pre-command-hook' inexpensive and prevents stale origins from leaking into a
-later recent-file action."
+The primary integration now uses `repo-swap--recentf-command-around', which
+keeps the origin dynamically bound for the complete command, including any
+recursive minibuffer session.  Unrelated commands clear the compatibility
+value so it cannot become a stale fallback."
   (setq repo-swap--command-origin-root
         (when (repo-swap--recentf-command-p)
           (or repo-swap--buffer-root
@@ -564,7 +599,8 @@ later recent-file action."
 (defun repo-swap--capture-recentf-origin (&rest _ignored)
   "Remember the checkout before a built-in recentf command changes buffers."
   (setq repo-swap--recentf-origin-root
-        (or repo-swap--command-origin-root
+        (or repo-swap--active-recentf-origin-root
+            repo-swap--command-origin-root
             (repo-swap--current-root-noerror))))
 
 (defun repo-swap--recentf-command-p (&optional command)
@@ -574,9 +610,55 @@ later recent-file action."
     (and name
          (string-match-p repo-swap-recentf-command-regexp name))))
 
+(defun repo-swap--recentf-command-symbols ()
+  "Return loaded commands that should retain recentf origin state."
+  (let ((symbols (copy-sequence repo-swap-recentf-command-functions)))
+    (mapatoms
+     (lambda (symbol)
+       (when (and (fboundp symbol)
+                  (commandp symbol)
+                  (not (string-prefix-p "repo-swap-" (symbol-name symbol)))
+                  (repo-swap--recentf-command-p symbol))
+         (push symbol symbols))))
+    (delete-dups symbols)))
+
+(defun repo-swap--recentf-command-around (original &rest arguments)
+  "Call ORIGINAL with ARGUMENTS while preserving the invoking checkout."
+  (let* ((origin (or repo-swap--buffer-root
+                     (repo-swap--current-root-noerror)))
+         (repo-swap--active-recentf-origin-root origin)
+         (repo-swap--active-recentf-command this-command)
+         (repo-swap--command-origin-root origin))
+    (when repo-swap-debug
+      (message "repo-swap recentf: entered command=%S origin=%S"
+               this-command origin))
+    (apply original arguments)))
+
+(defun repo-swap--install-recentf-command-advice ()
+  "Advise all currently loaded recent-file entry commands."
+  (dolist (function (repo-swap--recentf-command-symbols))
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'repo-swap--recentf-command-around function)))
+      (advice-add function :around #'repo-swap--recentf-command-around)
+      (push function repo-swap--advised-recentf-commands))))
+
+(defun repo-swap--remove-recentf-command-advice ()
+  "Remove command-level recentf origin advice installed by Repo Swap."
+  (dolist (function (delete-dups repo-swap--advised-recentf-commands))
+    (when (fboundp function)
+      (advice-remove function #'repo-swap--recentf-command-around)))
+  (setq repo-swap--advised-recentf-commands nil))
+
+(defun repo-swap--after-load-refresh-recentf-advice (&rest _ignored)
+  "Attach recentf command advice after another library is loaded."
+  (when (and repo-swap-mode repo-swap-integrate-recentf)
+    (repo-swap--install-recentf-command-advice)))
+
 (defun repo-swap--recentf-listed-file-p (file)
   "Return non-nil when FILE is currently present in `recentf-list'."
-  (and (boundp 'recentf-list)
+  (and (stringp file)
+       (boundp 'recentf-list)
        (cl-some
         (lambda (recent)
           (ignore-errors (repo-swap--same-file-name-p file recent)))
@@ -585,10 +667,11 @@ later recent-file action."
 (defun repo-swap--recentf-preferred-root (&optional explicit-root)
   "Return the preferred checkout for a recent-file open.
 
-EXPLICIT-ROOT wins.  Otherwise prefer the root captured before the current
-interactive command, then a root captured before a built-in recentf dialog,
-and only then inspect the action-time buffer."
+EXPLICIT-ROOT wins.  Otherwise prefer the dynamically retained root of the
+active recent-file command, then compatibility/dialog captures, and only then
+inspect the action-time buffer."
   (or explicit-root
+      repo-swap--active-recentf-origin-root
       repo-swap--command-origin-root
       repo-swap--recentf-origin-root
       (repo-swap--current-root-noerror)))
@@ -597,8 +680,8 @@ and only then inspect the action-time buffer."
   "Log a recentf decision involving FILE, PREFERRED-ROOT, TARGET and SOURCE."
   (when repo-swap-debug
     (message "repo-swap recentf: command=%S origin=%S source=%S exact=%S target=%S"
-             this-command preferred-root source
-             (expand-file-name file) target)))
+             (or repo-swap--active-recentf-command this-command)
+             preferred-root source (expand-file-name file) target)))
 
 (defun repo-swap--recentf-decision (file preferred-root)
   "Return a plist describing how FILE maps into PREFERRED-ROOT."
@@ -616,15 +699,20 @@ and only then inspect the action-time buffer."
           :target target
           :redirected (not (repo-swap--same-file-name-p exact-file target)))))
 
-(defun repo-swap--find-file-around (original file &rest arguments)
-  "Redirect recent-file opens before calling ORIGINAL with FILE and ARGUMENTS."
+(defun repo-swap--find-file-noselect-around (original file &rest arguments)
+  "Redirect a recent FILE before calling ORIGINAL with FILE and ARGUMENTS.
+
+Advising `find-file-noselect' catches `find-file', `find-file-other-window',
+and recent-file front ends that choose a different display function.  The
+advice is inert unless it runs within a command wrapped by
+`repo-swap--recentf-command-around' and FILE is present in `recentf-list'."
   (if (or repo-swap--redirecting-recentf
           (not repo-swap-mode)
           (not repo-swap-integrate-recentf)
-          (not (repo-swap--recentf-command-p))
+          (null repo-swap--active-recentf-origin-root)
           (not (repo-swap--recentf-listed-file-p file)))
       (apply original file arguments)
-    (let* ((root (repo-swap--recentf-preferred-root))
+    (let* ((root repo-swap--active-recentf-origin-root)
            (decision (repo-swap--recentf-decision file root))
            (target (plist-get decision :target)))
       (repo-swap--debug-recentf-decision
@@ -674,17 +762,25 @@ before the current recent-file command or dialog."
 (defun repo-swap--install-recentf-integration ()
   "Install repo-swap's opt-in recentf integration."
   (require 'recentf)
+  ;; Clean up advice used by 0.1.6 when this file is reloaded in place.
+  (remove-hook 'pre-command-hook #'repo-swap--capture-command-origin)
+  (when (fboundp 'repo-swap--find-file-around)
+    (advice-remove 'find-file #'repo-swap--find-file-around))
   (unless (eq recentf-menu-action #'repo-swap-recentf-open-file)
     (setq repo-swap--recentf-original-action recentf-menu-action)
     (setq recentf-menu-action #'repo-swap-recentf-open-file))
-  (add-hook 'pre-command-hook #'repo-swap--capture-command-origin)
-  (unless (advice-member-p #'repo-swap--find-file-around 'find-file)
-    (advice-add 'find-file :around #'repo-swap--find-file-around))
+  (unless (advice-member-p #'repo-swap--find-file-noselect-around
+                           'find-file-noselect)
+    (advice-add 'find-file-noselect :around
+                #'repo-swap--find-file-noselect-around))
   (dolist (function repo-swap--recentf-origin-functions)
     (when (and (fboundp function)
                (not (advice-member-p
                      #'repo-swap--capture-recentf-origin function)))
-      (advice-add function :before #'repo-swap--capture-recentf-origin))))
+      (advice-add function :before #'repo-swap--capture-recentf-origin)))
+  (add-hook 'after-load-functions
+            #'repo-swap--after-load-refresh-recentf-advice)
+  (repo-swap--install-recentf-command-advice))
 
 (defun repo-swap--remove-recentf-integration ()
   "Remove repo-swap's recentf integration and restore the prior action."
@@ -692,8 +788,14 @@ before the current recent-file command or dialog."
              (eq recentf-menu-action #'repo-swap-recentf-open-file))
     (setq recentf-menu-action
           (or repo-swap--recentf-original-action #'find-file)))
+  ;; Remove both current and pre-0.1.7 integration hooks/advice.
   (remove-hook 'pre-command-hook #'repo-swap--capture-command-origin)
-  (advice-remove 'find-file #'repo-swap--find-file-around)
+  (remove-hook 'after-load-functions
+               #'repo-swap--after-load-refresh-recentf-advice)
+  (when (fboundp 'repo-swap--find-file-around)
+    (advice-remove 'find-file #'repo-swap--find-file-around))
+  (advice-remove 'find-file-noselect #'repo-swap--find-file-noselect-around)
+  (repo-swap--remove-recentf-command-advice)
   (dolist (function repo-swap--recentf-origin-functions)
     (when (fboundp function)
       (advice-remove function #'repo-swap--capture-recentf-origin)))
@@ -711,6 +813,24 @@ before the current recent-file command or dialog."
            (if (and repo-swap-mode repo-swap-integrate-recentf)
                "enabled"
              "disabled")))
+
+;;;###autoload
+(defun repo-swap-version ()
+  "Display the loaded Repo Swap version, source and integration status."
+  (interactive)
+  (let ((source (or (symbol-file 'repo-swap-mode 'defun)
+                    (locate-library "repo-swap")
+                    "unknown"))
+        (integration (and repo-swap-mode repo-swap-integrate-recentf))
+        (advised-count (length
+                        (delete-dups
+                         (copy-sequence
+                          repo-swap--advised-recentf-commands)))))
+    (message "repo-swap %s (loaded from %s; recentf=%s; advised-commands=%d)"
+             repo-swap-version source
+             (if integration "enabled" "disabled")
+             advised-count)
+    repo-swap-version))
 
 (defun repo-swap--git-string (root &rest args)
   "Run git in ROOT with ARGS and return trimmed output, or nil."
