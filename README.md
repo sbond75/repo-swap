@@ -1,6 +1,6 @@
 # repo-swap.el
 
-Version 0.1.7
+Version 0.1.8
 
 `repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts, worktrees, or clones.
 
@@ -215,7 +215,7 @@ Confirm the exact loaded build and path with:
 M-x repo-swap-version
 ```
 
-Version 0.1.7 also reports how many recent-file commands currently carry the
+Version 0.1.8 also reports how many recent-file commands currently carry the
 origin-preserving advice.
 
 ## Combined buffer/recent-file switcher
@@ -301,7 +301,7 @@ Repo Swap uses those loaded contexts when available and maintains its own lightw
 
 ## Running tests
 
-The suite now contains 21 ERT tests:
+The suite now contains 24 ERT tests:
 
 ```bat
 "C:\Users\user\Downloads\emacs-28.2\bin\emacs.exe" -Q --batch ^
@@ -311,6 +311,13 @@ The suite now contains 21 ERT tests:
 ```
 
 ## Changelog
+
+### 0.1.8
+
+- Integrate Ivy virtual recent buffers selected through `ivy-switch-buffer` / `C-x b`.
+- Preserve the invoking checkout while Ivy opens a virtual recent file through its switch-buffer action.
+- Extend `M-x repo-swap-version` with `ivy=advised`, `ivy=loaded-not-advised`, or `ivy=not-loaded` status.
+- Added three Ivy integration regression tests, bringing the suite to 24 tests.
 
 ### 0.1.7
 
@@ -354,3 +361,34 @@ The suite now contains 21 ERT tests:
 
 - Fixed candidate-root filtering so valid remembered, extra, ModPatch, and sibling roots are retained instead of discarded.
 - Added ERT coverage for swapping the same relative file between two remembered checkout roots.
+
+
+### Ivy `C-x b` virtual recent files
+
+When `ivy-use-virtual-buffers` is non-nil, Ivy adds `recentf-list` entries to
+`ivy-switch-buffer` as virtual buffers.  These are not opened through a command
+whose name contains `recentf`; Ivy's switch-buffer action resolves the virtual
+candidate and opens its stored file path itself.
+
+Repo Swap 0.1.8 explicitly wraps `ivy-switch-buffer` and
+`ivy-switch-buffer-other-window`, so the existing opt-in setting also applies
+to recent-file candidates selected from Ivy's `C-x b`:
+
+```elisp
+(setq repo-swap-integrate-recentf t)
+```
+
+Live buffer selections remain ordinary buffer switches.  Only an Ivy virtual
+candidate whose target is present in `recentf-list` is eligible for checkout
+redirection.
+
+After reloading while Ivy is already active, run:
+
+```elisp
+(repo-swap-refresh-recentf-integration)
+(repo-swap-version)
+```
+
+The version message should report `ivy=advised`.  `ivy=not-loaded` is normal
+when Ivy has not been loaded yet; Repo Swap installs the advice when it loads.
+`ivy=loaded-not-advised` indicates that the integration needs refreshing.

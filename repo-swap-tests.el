@@ -437,9 +437,49 @@
 
 (ert-deftest repo-swap-test-version-command-reports-current-version ()
   "The interactive version command identifies the loaded build."
-  (should (equal repo-swap-version "0.1.7"))
+  (should (equal repo-swap-version "0.1.8"))
   (should (commandp 'repo-swap-version))
-  (should (equal (repo-swap-version) "0.1.7")))
+  (should (equal (repo-swap-version) "0.1.8")))
+
+
+(ert-deftest repo-swap-test-ivy-switch-buffer-is-explicit-integration-command ()
+  "Ivy virtual recent files are recognized despite a non-recentf command name."
+  (should (memq 'ivy-switch-buffer repo-swap-recentf-command-functions))
+  (should (memq 'ivy-switch-buffer-other-window
+                repo-swap-recentf-command-functions)))
+
+(ert-deftest repo-swap-test-ivy-switch-buffer-command-retains-origin-dynamically ()
+  "Ivy C-x b retains the checkout while its virtual-buffer action runs."
+  (let ((repo-swap--buffer-root "j:/Projects/ShapeShift_featureWork/")
+        (repo-swap--active-recentf-origin-root nil)
+        (repo-swap--active-recentf-command nil)
+        (this-command 'ivy-switch-buffer)
+        seen-root
+        seen-command)
+    (repo-swap--recentf-command-around
+     (lambda ()
+       (setq seen-root repo-swap--active-recentf-origin-root)
+       (setq seen-command repo-swap--active-recentf-command)))
+    (should (equal seen-root "j:/Projects/ShapeShift_featureWork/"))
+    (should (eq seen-command 'ivy-switch-buffer))))
+
+(ert-deftest repo-swap-test-install-advises-loaded-ivy-switch-buffer ()
+  "Refreshing integration advises Ivy's virtual-buffer entry command."
+  (let ((had-function (fboundp 'ivy-switch-buffer))
+        (old-function (and (fboundp 'ivy-switch-buffer)
+                           (symbol-function 'ivy-switch-buffer)))
+        (repo-swap--advised-recentf-commands nil))
+    (unwind-protect
+        (progn
+          (fset 'ivy-switch-buffer (lambda () (interactive)))
+          (repo-swap--install-recentf-command-advice)
+          (should
+           (advice-member-p #'repo-swap--recentf-command-around
+                            'ivy-switch-buffer)))
+      (advice-remove 'ivy-switch-buffer #'repo-swap--recentf-command-around)
+      (if had-function
+          (fset 'ivy-switch-buffer old-function)
+        (fmakunbound 'ivy-switch-buffer)))))
 
 (provide 'repo-swap-tests)
 

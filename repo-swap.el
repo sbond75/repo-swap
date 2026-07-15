@@ -1,6 +1,6 @@
 ;;; repo-swap.el --- Jump to the same relative file in another checkout -*- lexical-binding: t; -*-
 
-;; Version: 0.1.7
+;; Version: 0.1.8
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: files, convenience, vc
 
@@ -28,7 +28,7 @@
   :group 'files
   :prefix "repo-swap-")
 
-(defconst repo-swap-version "0.1.7"
+(defconst repo-swap-version "0.1.8"
   "Current repo-swap package version.")
 
 (defcustom repo-swap-kill-old-buffer nil
@@ -155,15 +155,23 @@ also be opening a path currently present in `recentf-list', so ordinary
     recentf-open-most-recent-file
     consult-recent-file
     counsel-recentf
-    helm-recentf)
+    helm-recentf
+    ivy-switch-buffer
+    ivy-switch-buffer-other-window
+    counsel-switch-buffer
+    counsel-switch-buffer-other-window)
   "Commands whose entire execution should retain the invoking checkout.
 
 Repo Swap advises loaded functions in this list, plus loaded interactive
-commands whose names match `repo-swap-recentf-command-regexp'.  Retaining the
-origin for the command's complete dynamic extent is important because
-completion front ends enter a recursive minibuffer; by the time they open a
-file, `this-command' may be a minibuffer command rather than the original
-recent-file command.
+commands whose names match `repo-swap-recentf-command-regexp'.  The explicit
+Ivy switch-buffer entries are intentional: with `ivy-use-virtual-buffers', a
+recent file is presented as a virtual buffer and opened from `C-x b', even
+though the command name contains neither \"recentf\" nor \"recent-file\".
+
+Retaining the origin for the command's complete dynamic extent is important
+because completion front ends enter a recursive minibuffer; by the time they
+open a file, `this-command' may be a minibuffer command rather than the
+original recent-file or virtual-buffer command.
 
 After adding a command at runtime, call
 `repo-swap-refresh-recentf-integration'."
@@ -818,18 +826,25 @@ before the current recent-file command or dialog."
 (defun repo-swap-version ()
   "Display the loaded Repo Swap version, source and integration status."
   (interactive)
-  (let ((source (or (symbol-file 'repo-swap-mode 'defun)
-                    (locate-library "repo-swap")
-                    "unknown"))
-        (integration (and repo-swap-mode repo-swap-integrate-recentf))
-        (advised-count (length
-                        (delete-dups
-                         (copy-sequence
-                          repo-swap--advised-recentf-commands)))))
-    (message "repo-swap %s (loaded from %s; recentf=%s; advised-commands=%d)"
+  (let* ((source (or (symbol-file 'repo-swap-mode 'defun)
+                     (locate-library "repo-swap")
+                     "unknown"))
+         (integration (and repo-swap-mode repo-swap-integrate-recentf))
+         (advised (delete-dups
+                   (copy-sequence repo-swap--advised-recentf-commands)))
+         (advised-count (length advised))
+         (ivy-loaded (fboundp 'ivy-switch-buffer))
+         (ivy-advised (and ivy-loaded
+                           (advice-member-p
+                            #'repo-swap--recentf-command-around
+                            'ivy-switch-buffer))))
+    (message "repo-swap %s (loaded from %s; recentf=%s; advised-commands=%d; ivy=%s)"
              repo-swap-version source
              (if integration "enabled" "disabled")
-             advised-count)
+             advised-count
+             (cond (ivy-advised "advised")
+                   (ivy-loaded "loaded-not-advised")
+                   (t "not-loaded")))
     repo-swap-version))
 
 (defun repo-swap--git-string (root &rest args)
