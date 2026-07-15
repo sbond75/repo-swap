@@ -151,6 +151,127 @@
                     " RepoSwap[left/ShapeShift]"))))
       (delete-directory sandbox t))))
 
+
+(ert-deftest repo-swap-test-recentf-target-redirects-into-preferred-root ()
+  "A recent file in another known checkout redirects into the current root."
+  (let* ((sandbox (make-temp-file "repo-swap-test-" t))
+         (root-a (expand-file-name "ShapeShift/" sandbox))
+         (root-b (expand-file-name "ShapeShift_featureWork/" sandbox))
+         (relative "Assets/Lua/testmodule.lua")
+         (file-a (expand-file-name relative root-a))
+         (file-b (expand-file-name relative root-b))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return 'a'\n")
+          (repo-swap-test--write-file file-b "return 'b'\n")
+          (setq repo-swap--known-roots
+                (list (repo-swap--canonical-directory root-a)
+                      (repo-swap--canonical-directory root-b)))
+          (should
+           (repo-swap--same-file-name-p
+            (repo-swap--recentf-target-file file-a root-b)
+            file-b)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-recentf-target-keeps-exact-path-when-peer-missing ()
+  "A recent file keeps its exact path when the preferred checkout lacks it."
+  (let* ((sandbox (make-temp-file "repo-swap-test-" t))
+         (root-a (expand-file-name "ShapeShift/" sandbox))
+         (root-b (expand-file-name "ShapeShift_featureWork/" sandbox))
+         (relative "Assets/Lua/only-in-a.lua")
+         (file-a (expand-file-name relative root-a))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return 'a'\n")
+          (make-directory root-b t)
+          (setq repo-swap--known-roots
+                (list (repo-swap--canonical-directory root-a)
+                      (repo-swap--canonical-directory root-b)))
+          (should
+           (repo-swap--same-file-name-p
+            (repo-swap--recentf-target-file file-a root-b)
+            file-a)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-recentf-action-keeps-exact-path-when-disabled ()
+  "The recentf wrapper preserves normal recentf behavior when integration is off."
+  (let* ((sandbox (make-temp-file "repo-swap-test-" t))
+         (file (expand-file-name "sample.lua" sandbox))
+         (repo-swap-integrate-recentf nil)
+         (opened nil)
+         (repo-swap--recentf-original-action
+          (lambda (target) (setq opened target))))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file "return true\n")
+          (repo-swap-recentf-open-file file nil)
+          (should (repo-swap--same-file-name-p opened file)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-recentf-integration-wraps-and-restores-action ()
+  "Installing recentf integration replaces and then restores its action."
+  (require 'recentf)
+  (let ((original-action recentf-menu-action)
+        (repo-swap--recentf-original-action nil))
+    (unwind-protect
+        (progn
+          (repo-swap--install-recentf-integration)
+          (should (eq recentf-menu-action
+                      #'repo-swap-recentf-open-file))
+          (repo-swap--remove-recentf-integration)
+          (should (eq recentf-menu-action original-action)))
+      (setq recentf-menu-action original-action)
+      (dolist (function repo-swap--recentf-origin-functions)
+        (when (fboundp function)
+          (advice-remove function
+                         #'repo-swap--capture-recentf-origin))))))
+
+(ert-deftest repo-swap-test-combined-switcher-switches-live-buffer-normally ()
+  "A live-buffer choice from the combined switcher uses switch-to-buffer."
+  (let ((target (generate-new-buffer "repo-swap-target")))
+    (unwind-protect
+        (let ((table (list (cons "[Buffer] repo-swap-target"
+                                 (list :type 'buffer :buffer target)))))
+          (cl-letf (((symbol-function 'repo-swap--switch-buffer-completion-table)
+                     (lambda () table))
+                    ((symbol-function 'completing-read)
+                     (lambda (&rest _args) "[Buffer] repo-swap-target")))
+            (repo-swap-switch-buffer-or-recentf)
+            (should (eq (current-buffer) target))))
+      (when (buffer-live-p target)
+        (kill-buffer target)))))
+
+(ert-deftest repo-swap-test-combined-switcher-opens-recent-through-wrapper ()
+  "A recent choice from the combined switcher uses repo-swap's recentf wrapper."
+  (let* ((file "c:/example/Assets/Lua/testmodule.lua")
+         (table (list (cons "[Recent] testmodule.lua"
+                            (list :type 'recent :file file))))
+         (called-file nil)
+         (called-root nil))
+    (cl-letf (((symbol-function 'repo-swap--switch-buffer-completion-table)
+               (lambda () table))
+              ((symbol-function 'repo-swap--current-root-noerror)
+               (lambda () "c:/example-root/"))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _args) "[Recent] testmodule.lua"))
+              ((symbol-function 'repo-swap-recentf-open-file)
+               (lambda (selected-file preferred-root)
+                 (setq called-file selected-file)
+                 (setq called-root preferred-root))))
+      (repo-swap-switch-buffer-or-recentf)
+      (should (equal called-file file))
+      (should (equal called-root "c:/example-root/")))))
+
 (provide 'repo-swap-tests)
 
 ;;; repo-swap-tests.el ends here

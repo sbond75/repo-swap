@@ -1,179 +1,234 @@
 # repo-swap.el
 
-Version 0.1.3
+Version 0.1.4
 
-`repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts/worktrees/clones.
+`repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts, worktrees, or clones.
 
 Example:
 
 ```text
-C:/Users/user/Documents/Visual Studio 2015/Projects/test/Assets/Lua/testmodule.lua
-J:/Projects/test_featureWork2/Assets/Lua/testmodule.lua
+C:/Users/user/Documents/Visual Studio 2015/Projects/ShapeShift/Assets/Lua/testmodule.lua
+J:/Projects/ShapeShift_featureWork/Assets/Lua/testmodule.lua
 ```
 
-When invoked from the first file, `repo-swap-open-same-file` finds the current project root, computes `Assets/Lua/testmodule.lua`, finds other known roots that contain that relative file, and opens the selected copy.
+From either file, `repo-swap-open-same-file` computes `Assets/Lua/testmodule.lua`, finds another known root containing that relative path, and opens it. Repo Swap does not diff, sync, patch, or rewrite either file.
 
-It does not diff, sync, patch, or rewrite anything. The action is just:
+## Install with use-package
 
-1. Open the target file in a new/current buffer.
-2. Optionally kill the original buffer, controlled by `repo-swap-kill-old-buffer`.
+Put `repo-swap.el` in:
 
-## Install
+```text
+~/.emacs.d/repo-swap/repo-swap.el
+```
 
-Put `repo-swap.el` in `~/.emacs.d/repo-swap/` or any directory on your load path.
+Then use:
 
 ```elisp
 (add-to-list 'load-path
              (expand-file-name "repo-swap" user-emacs-directory))
-(require 'repo-swap)
-(repo-swap-mode 1)
+
+(use-package repo-swap
+  :ensure nil
+  :demand t
+
+  :init
+  ;; nil = keep the old buffer; t = kill it; 'ask = ask each time.
+  (setq repo-swap-kill-old-buffer nil)
+
+  ;; Remember encountered checkout roots across Emacs sessions.
+  (setq repo-swap-remember-roots t)
+
+  ;; Do not enumerate sibling directories automatically.
+  (setq repo-swap-include-sibling-roots nil)
+
+  ;; Persistent remembered-root location.
+  (setq repo-swap-known-roots-file
+        (expand-file-name "repo-swap/known-roots.el"
+                          user-emacs-directory))
+
+  ;; Extra roots that should always be considered.
+  (setq repo-swap-extra-roots nil)
+
+  ;; Use loaded ModPatch contexts as additional known roots.
+  (setq repo-swap-use-modpatch-contexts t)
+
+  ;; Prefer a ModPatch context when identifying the current root.
+  (setq repo-swap-prefer-modpatch-root t)
+
+  ;; Show Git branch names in the checkout picker.
+  (setq repo-swap-show-git-branch t)
+
+  ;; Show RepoSwap[checkout-name] in the mode line.
+  (setq repo-swap-show-root-in-mode-line t)
+
+  ;; Opt in: make built-in recentf prefer the current checkout's copy.
+  (setq repo-swap-integrate-recentf t)
+
+  ;; Include recent files in the C-c b buffer switcher.
+  (setq repo-swap-switch-buffer-include-recentf t)
+
+  :config
+  (repo-swap-mode 1))
 ```
 
-Suggested settings:
+`repo-swap-integrate-recentf` defaults to `nil`; the example deliberately enables it so you can try the feature.
+
+## Commands
+
+- `M-x repo-swap-open-same-file` / `C-c r s`  
+  Open the same relative file in another known checkout.
+
+- `M-x repo-swap-switch-buffer-or-recentf` / `C-c b`  
+  Offer live buffers and recent files in one completion list. A live-buffer choice uses normal `switch-to-buffer`. A recent-file choice follows `repo-swap-integrate-recentf`: redirected when enabled, exact recentf path when disabled.
+
+- `M-x repo-swap-remember-current-root` / `C-c r r`  
+  Add the current checkout root to the user-local known-roots file.
+
+- `M-x repo-swap-list-known-roots` / `C-c r l`  
+  Show remembered roots and loaded ModPatch roots.
+
+- `M-x repo-swap-refresh-recentf-integration`  
+  Reinstall or remove the recentf wrapper after changing `repo-swap-integrate-recentf` while Repo Swap is already running.
+
+Ordinary `C-x b` remains unchanged.
+
+## Recentf integration
+
+The integration is disabled by default:
 
 ```elisp
-(setq repo-swap-kill-old-buffer 'ask) ;; nil, t, or 'ask
+(setq repo-swap-integrate-recentf nil)
+```
 
-;; Enabled by default: remember roots across Emacs restarts.
-(setq repo-swap-remember-roots t)
+Enable it before `repo-swap-mode` starts:
 
-;; Disabled by default: do not enumerate sibling directories automatically.
-(setq repo-swap-include-sibling-roots nil)
+```elisp
+(setq repo-swap-integrate-recentf t)
+```
 
-;; This is already the default; customize it if you prefer another location.
-(setq repo-swap-known-roots-file
-      (expand-file-name "repo-swap/known-roots.el" user-emacs-directory))
+Suppose you are currently working in:
 
-;; Enabled by default: show the current checkout in the mode line.
-(setq repo-swap-show-root-in-mode-line t)
+```text
+J:/Projects/ShapeShift_featureWork/
+```
+
+and recentf contains:
+
+```text
+C:/.../ShapeShift/Assets/Lua/testmodule.lua
+```
+
+When the feature is enabled, Repo Swap checks whether this exists:
+
+```text
+J:/Projects/ShapeShift_featureWork/Assets/Lua/testmodule.lua
+```
+
+If it exists, recentf opens that feature-work copy. If the selected recent file is not under another known checkout, or the corresponding file does not exist in the current checkout, recentf opens its original exact path.
+
+The current checkout is captured before recentf opens its dialog, so the dialog buffer itself does not lose the destination context.
+
+If you change the setting after Repo Swap is already enabled:
+
+```elisp
+(setq repo-swap-integrate-recentf t)
+(repo-swap-refresh-recentf-integration)
+```
+
+## Combined buffer/recent-file switcher
+
+`C-c b` acts like a broader `C-x b`:
+
+```text
+[Buffer] testmodule.lua
+[Buffer] *Messages*
+[Recent] GameSim.cpp — C:/.../GameSim.cpp
+```
+
+- Selecting `[Buffer] ...` switches to that existing buffer normally.
+- Selecting `[Recent] ...` opens the file.
+- When recentf integration is enabled, the recent entry is redirected into the checkout active when `C-c b` was invoked.
+- When integration is disabled, the exact path stored by recentf is opened.
+
+Disable recent-file candidates while retaining the command as a buffer switcher:
+
+```elisp
+(setq repo-swap-switch-buffer-include-recentf nil)
 ```
 
 ## Mode-line checkout label
 
-When `repo-swap-mode` is enabled, file-visiting buffers show the current checkout
-beside `RepoSwap`, for example:
+File-visiting buffers show the current checkout beside `RepoSwap`, for example:
 
 ```text
 RepoSwap[ShapeShift_featureWork]
 ```
 
-The shortest unique suffix of the checkout path is used. If several known roots
-share the same directory basename, Repo Swap prepends parent directory components
-until the labels are unique:
+If checkout basenames collide, parent components are added until unique:
 
 ```text
 RepoSwap[left/ShapeShift]
 RepoSwap[right/ShapeShift]
 ```
 
-If those parents are also identical, it keeps walking upward:
+If one parent is still insufficient:
 
 ```text
 RepoSwap[left/Projects/ShapeShift]
 RepoSwap[right/Projects/ShapeShift]
 ```
 
-The roots considered for disambiguation are remembered roots, explicit
-`repo-swap-extra-roots`, and loaded ModPatch contexts. Sibling directories are
-not scanned during mode-line redisplay. Disable the label with:
+Disable the label with:
 
 ```elisp
 (setq repo-swap-show-root-in-mode-line nil)
 ```
 
-## Commands
-
-- `M-x repo-swap-open-same-file` / `C-c r s`
-  Open the same relative file in another known checkout.
-
-- `M-x repo-swap-remember-current-root` / `C-c r r`
-  Add the current checkout root to the user-local known-roots file.
-
-- `M-x repo-swap-list-known-roots` / `C-c r l`
-  Show remembered roots and loaded ModPatch roots.
-
 ## Root discovery
 
 The current root is found in this order:
 
-1. Current buffer's ModPatch v2 context, when available.
-2. Nearest root marker such as `.modpatch-project.el`, `.git`, or `.hg`.
-3. `project.el` root.
-4. VC root.
+1. The current buffer's ModPatch v2 context, when available.
+2. The nearest `.modpatch-project.el`, `.git`, or `.hg` marker.
+3. The `project.el` root.
+4. The VC root.
 
 Candidate target roots come from:
 
-- user-local remembered roots when `repo-swap-remember-roots` is non-nil;
+- remembered roots when `repo-swap-remember-roots` is non-nil;
 - `repo-swap-extra-roots`;
 - loaded ModPatch v2 contexts;
-- sibling directories next to the current checkout only when `repo-swap-include-sibling-roots` is non-nil.
+- sibling directories only when `repo-swap-include-sibling-roots` is non-nil.
 
 Remembered roots are enabled by default. Sibling scanning is disabled by default.
 
 ## ModPatch support
 
-ModPatch v2 does not maintain one complete permanent registry of every checkout. It has:
+ModPatch v2 does not retain one permanent registry of every checkout. It has one `.modpatch-project.el` manifest per checkout and in-memory contexts for projects loaded during the current Emacs session.
 
-- `.modpatch-project.el` in each repo/worktree, which records associations for that repo only;
-- user-local runtime state files under `modpatch-state-directory`;
-- in-memory contexts for ModPatch projects that have been loaded in the current Emacs session.
+Repo Swap uses those loaded contexts when available and maintains its own lightweight `known-roots.el` file, so roots remain available across restarts without requiring sibling scans.
 
-`repo-swap` uses loaded ModPatch contexts when available. It also keeps its own lightweight user-local `known-roots.el` file so it does not depend on ModPatch being loaded first. Sibling scanning is optional and disabled by default.
+## Running tests
 
-## Suggested config with ModPatch
+The suite now contains 12 ERT tests:
 
-```elisp
-(add-to-list 'load-path
-             (expand-file-name "modpatch" user-emacs-directory))
-(load-file (expand-file-name "modpatch/modpatch.el" user-emacs-directory))
-
-(add-to-list 'load-path
-             (expand-file-name "repo-swap" user-emacs-directory))
-(require 'repo-swap)
-
-(setq repo-swap-kill-old-buffer nil) ;; keep old buffer by default
-(setq repo-swap-remember-roots t) ;; default
-(setq repo-swap-include-sibling-roots nil) ;; default
-(setq repo-swap-show-root-in-mode-line t) ;; default
-(repo-swap-mode 1)
+```bat
+"C:\Users\user\Downloads\emacs-28.2\bin\emacs.exe" -Q --batch ^
+  -L "%APPDATA%\.emacs.d\repo-swap" ^
+  -l "%APPDATA%\.emacs.d\repo-swap\repo-swap-tests.el" ^
+  -f ert-run-tests-batch-and-exit
 ```
-
-
-
-## Discovery settings
-
-### Remembered roots
-
-`repo-swap-remember-roots` defaults to `t`. When enabled, repo-swap:
-
-- reads roots from `repo-swap-known-roots-file`;
-- automatically remembers roots encountered while visiting files;
-- writes newly discovered roots back to that file;
-- uses those roots as swap candidates.
-
-Set it to `nil` to disable all reading, writing, and use of the remembered-roots file:
-
-```elisp
-(setq repo-swap-remember-roots nil)
-```
-
-The file location is configurable:
-
-```elisp
-(setq repo-swap-known-roots-file
-      (expand-file-name "repo-swap/known-roots.el" user-emacs-directory))
-```
-
-### Sibling scanning
-
-`repo-swap-include-sibling-roots` defaults to `nil`. Enable it explicitly when you want repo-swap to enumerate sibling directories beside the current checkout:
-
-```elisp
-(setq repo-swap-include-sibling-roots t)
-```
-
 
 ## Changelog
+
+### 0.1.4
+
+- Added opt-in Repo-Swap-aware recentf opening through `repo-swap-integrate-recentf`.
+- Added exact-path fallback when the corresponding file is absent from the active checkout.
+- Added `repo-swap-refresh-recentf-integration` for runtime setting changes.
+- Added `repo-swap-switch-buffer-or-recentf`, bound to `C-c b`.
+- Kept ordinary `C-x b` unchanged.
+- Added six ERT tests for recentf resolution, integration lifecycle, and the combined switcher.
 
 ### 0.1.3
 

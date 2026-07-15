@@ -1,6 +1,6 @@
 ;;; repo-swap.el --- Jump to the same relative file in another checkout -*- lexical-binding: t; -*-
 
-;; Version: 0.1.3
+;; Version: 0.1.4
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: files, convenience, vc
 
@@ -109,8 +109,41 @@ the label is unique, for example `[worktrees/ShapeShift]'."
   :type 'boolean
   :group 'repo-swap)
 
+(defcustom repo-swap-integrate-recentf nil
+  "When non-nil, open recentf entries in the current checkout when possible.
+
+Suppose the current buffer belongs to checkout B, but a selected recentf entry
+names a file in known checkout A.  If checkout B contains the same relative
+file, repo-swap opens B's copy.  Otherwise recentf keeps its exact-path
+behavior.  This option is disabled by default.
+
+Set this before enabling `repo-swap-mode'.  After changing it at runtime, call
+`repo-swap-refresh-recentf-integration' or toggle `repo-swap-mode'."
+  :type 'boolean
+  :group 'repo-swap)
+
+(defcustom repo-swap-switch-buffer-include-recentf t
+  "When non-nil, `repo-swap-switch-buffer-or-recentf' includes recent files.
+
+Open buffers always use normal `switch-to-buffer' behavior.  Recent-file
+entries use repo-swap redirection only when `repo-swap-integrate-recentf' is
+non-nil; otherwise they open their exact stored path."
+  :type 'boolean
+  :group 'repo-swap)
+
 (defvar repo-swap--known-roots nil
   "Cached list of user-local known roots.")
+
+(defvar repo-swap--recentf-original-action nil
+  "Recentf action saved before repo-swap installs its wrapper.")
+
+(defvar repo-swap--recentf-origin-root nil
+  "Checkout root active immediately before a recentf command.")
+
+(defconst repo-swap--recentf-origin-functions
+  '(recentf-open recentf-open-files recentf-open-more-files
+    recentf-open-most-recent-file)
+  "Recentf entry points advised to remember the originating checkout.")
 
 (defvar-local repo-swap--buffer-root nil
   "Canonical checkout root associated with the current buffer.")
@@ -261,6 +294,11 @@ This resolves Windows short names, symlinks and case quirks where possible."
             (repo-swap--canonical-directory root))))
       (user-error "Could not determine a checkout/project root for %s"
                   buffer-file-name)))
+
+(defun repo-swap--current-root-noerror ()
+  "Return the current buffer's checkout root, or nil without signaling."
+  (when buffer-file-name
+    (ignore-errors (repo-swap-current-root))))
 
 (defun repo-swap--modpatch-context-roots ()
   "Return roots from loaded ModPatch contexts."
@@ -423,6 +461,100 @@ prepended one at a time until the label differs from every other root."
             base))
       base)))
 
+(defun repo-swap--longest-containing-root (file roots)
+  "Return the deepest member of ROOTS containing FILE, or nil."
+  (let ((best nil))
+    (dolist (root roots best)
+      (when (and root
+                 (ignore-errors (repo-swap--path-under-root-p file root))
+                 (or (null best)
+                     (> (length root) (length best))))
+        (setq best root)))))
+
+(defun repo-swap--recentf-target-file (file preferred-root)
+  "Return FILE redirected into PREFERRED-ROOT when a matching copy exists.
+
+FILE is redirected only when it belongs to another known checkout and the same
+relative file exists beneath PREFERRED-ROOT.  Otherwise return FILE's exact
+expanded path."
+  (let* ((exact-file (expand-file-name file))
+         (preferred (repo-swap--safe-canonical-directory preferred-root)))
+    (if (or (null preferred)
+            (not (file-exists-p exact-file)))
+        exact-file
+      (let* ((roots (repo-swap--all-known-roots preferred))
+             (source-root (repo-swap--longest-containing-root exact-file roots)))
+        (if (or (null source-root)
+                (repo-swap--same-file-name-p source-root preferred))
+            exact-file
+          (let* ((relative (repo-swap--relative-name exact-file source-root))
+                 (target (expand-file-name relative preferred)))
+            (if (file-exists-p target)
+                (repo-swap--canonical-file target)
+              exact-file)))))))
+
+(defun repo-swap--recentf-fallback-action ()
+  "Return the recentf action that repo-swap should delegate to."
+  (if (and repo-swap--recentf-original-action
+           (not (eq repo-swap--recentf-original-action
+                    #'repo-swap-recentf-open-file)))
+      repo-swap--recentf-original-action
+    #'find-file))
+
+(defun repo-swap--capture-recentf-origin (&rest _ignored)
+  "Remember the current checkout before recentf changes buffers."
+  (setq repo-swap--recentf-origin-root
+        (repo-swap--current-root-noerror)))
+
+;;;###autoload
+(defun repo-swap-recentf-open-file (file &optional preferred-root)
+  "Open recent FILE, preferring the current checkout when possible.
+
+PREFERRED-ROOT is mainly for callers such as
+`repo-swap-switch-buffer-or-recentf'.  When nil, use the current file buffer's
+root or the root captured before a recentf dialog opened."
+  (let* ((root (or preferred-root
+                   (repo-swap--current-root-noerror)
+                   repo-swap--recentf-origin-root))
+         (target (if repo-swap-integrate-recentf
+                     (repo-swap--recentf-target-file file root)
+                   (expand-file-name file))))
+    (funcall (repo-swap--recentf-fallback-action) target)))
+
+(defun repo-swap--install-recentf-integration ()
+  "Install repo-swap's opt-in recentf integration."
+  (require 'recentf)
+  (unless (eq recentf-menu-action #'repo-swap-recentf-open-file)
+    (setq repo-swap--recentf-original-action recentf-menu-action)
+    (setq recentf-menu-action #'repo-swap-recentf-open-file))
+  (dolist (function repo-swap--recentf-origin-functions)
+    (when (and (fboundp function)
+               (not (advice-member-p
+                     #'repo-swap--capture-recentf-origin function)))
+      (advice-add function :before #'repo-swap--capture-recentf-origin))))
+
+(defun repo-swap--remove-recentf-integration ()
+  "Remove repo-swap's recentf integration and restore the prior action."
+  (when (and (boundp 'recentf-menu-action)
+             (eq recentf-menu-action #'repo-swap-recentf-open-file))
+    (setq recentf-menu-action
+          (or repo-swap--recentf-original-action #'find-file)))
+  (dolist (function repo-swap--recentf-origin-functions)
+    (when (fboundp function)
+      (advice-remove function #'repo-swap--capture-recentf-origin))))
+
+;;;###autoload
+(defun repo-swap-refresh-recentf-integration ()
+  "Apply the current value of `repo-swap-integrate-recentf'."
+  (interactive)
+  (if (and repo-swap-mode repo-swap-integrate-recentf)
+      (repo-swap--install-recentf-integration)
+    (repo-swap--remove-recentf-integration))
+  (message "repo-swap recentf integration: %s"
+           (if (and repo-swap-mode repo-swap-integrate-recentf)
+               "enabled"
+             "disabled")))
+
 (defun repo-swap--git-string (root &rest args)
   "Run git in ROOT with ARGS and return trimmed output, or nil."
   (when (executable-find "git")
@@ -531,6 +663,51 @@ buffer regardless of `repo-swap-kill-old-buffer'."
         (message "repo-swap: opened %s"
                  (abbreviate-file-name target))))))
 
+(defun repo-swap--switch-buffer-completion-table ()
+  "Return completion rows for live buffers and optional recent files."
+  (let ((seen (make-hash-table :test 'equal))
+        rows)
+    (dolist (buffer (buffer-list))
+      (let* ((name (buffer-name buffer))
+             (label (format "[Buffer] %s" name)))
+        (puthash name t seen)
+        (push (cons label (list :type 'buffer :buffer buffer)) rows)))
+    (when repo-swap-switch-buffer-include-recentf
+      (require 'recentf)
+      (unless recentf-mode
+        (recentf-mode 1))
+      (dolist (file recentf-list)
+        (let ((buffer (get-file-buffer file)))
+          (unless (and buffer (gethash (buffer-name buffer) seen))
+            (let ((label (format "[Recent] %s — %s"
+                                 (file-name-nondirectory file)
+                                 (abbreviate-file-name file))))
+              (push (cons label (list :type 'recent :file file)) rows))))))
+    (nreverse rows)))
+
+;;;###autoload
+(defun repo-swap-switch-buffer-or-recentf ()
+  "Switch to an open buffer or open a recent file.
+
+Open-buffer choices use normal `switch-to-buffer' behavior.  Recent-file
+choices open their exact recentf path unless `repo-swap-integrate-recentf' is
+non-nil, in which case the same relative file in the originating checkout is
+preferred when it exists."
+  (interactive)
+  (let* ((origin-root (repo-swap--current-root-noerror))
+         (table (repo-swap--switch-buffer-completion-table))
+         (choice (completing-read "Switch to buffer or recent file: "
+                                  table nil t nil 'buffer-name-history))
+         (item (cdr (assoc choice table))))
+    (pcase (plist-get item :type)
+      ('buffer
+       (switch-to-buffer (plist-get item :buffer)))
+      ('recent
+       (repo-swap-recentf-open-file
+        (plist-get item :file) origin-root))
+      (_
+       (user-error "No buffer or recent file selected")))))
+
 ;;;###autoload
 (defun repo-swap-remember-current-root ()
   "Remember the current buffer's checkout root."
@@ -585,6 +762,7 @@ buffer regardless of `repo-swap-kill-old-buffer'."
     (define-key map (kbd "C-c r s") #'repo-swap-open-same-file)
     (define-key map (kbd "C-c r r") #'repo-swap-remember-current-root)
     (define-key map (kbd "C-c r l") #'repo-swap-list-known-roots)
+    (define-key map (kbd "C-c b") #'repo-swap-switch-buffer-or-recentf)
     map)
   "Keymap for `repo-swap-mode'.")
 
@@ -599,15 +777,22 @@ buffer regardless of `repo-swap-kill-old-buffer'."
         (when repo-swap-remember-roots
           (repo-swap--load-known-roots))
         (add-hook 'find-file-hook #'repo-swap--maybe-remember-current-root)
+        (when repo-swap-integrate-recentf
+          (repo-swap--install-recentf-integration))
         (dolist (buffer (buffer-list))
           (with-current-buffer buffer
             (when buffer-file-name
               (repo-swap--maybe-remember-current-root)))))
     (remove-hook 'find-file-hook #'repo-swap--maybe-remember-current-root)
+    (repo-swap--remove-recentf-integration)
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (setq repo-swap--buffer-root nil)))
     (force-mode-line-update t)))
+
+(with-eval-after-load 'recentf
+  (when (and repo-swap-mode repo-swap-integrate-recentf)
+    (repo-swap--install-recentf-integration)))
 
 (provide 'repo-swap)
 
