@@ -1,6 +1,6 @@
 ;;; repo-swap.el --- Jump to the same relative file in another checkout -*- lexical-binding: t; -*-
 
-;; Version: 0.1.8
+;; Version: 0.1.9
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: files, convenience, vc
 
@@ -28,7 +28,7 @@
   :group 'files
   :prefix "repo-swap-")
 
-(defconst repo-swap-version "0.1.8"
+(defconst repo-swap-version "0.1.9"
   "Current repo-swap package version.")
 
 (defcustom repo-swap-kill-old-buffer nil
@@ -148,6 +148,20 @@ also be opening a path currently present in `recentf-list', so ordinary
   :type 'regexp
   :group 'repo-swap)
 
+(defconst repo-swap--builtin-recentf-command-functions
+  '(recentf-open
+    recentf-open-files
+    recentf-open-more-files
+    recentf-open-most-recent-file
+    ivy-switch-buffer
+    ivy-switch-buffer-other-window
+    counsel-switch-buffer
+    counsel-switch-buffer-other-window)
+  "Built-in integration entry points Repo Swap must always consider.
+
+These remain active even when an older customization of
+`repo-swap-recentf-command-functions' omits them.")
+
 (defcustom repo-swap-recentf-command-functions
   '(recentf-open
     recentf-open-files
@@ -203,6 +217,9 @@ After adding a command at runtime, call
 
 (defvar repo-swap--advised-recentf-commands nil
   "Recent-file commands currently carrying repo-swap around advice.")
+
+(defvar repo-swap--installing-recentf-command-advice nil
+  "Non-nil while Repo Swap is loading and advising recent-file commands.")
 
 (defvar repo-swap--redirecting-recentf nil
   "Non-nil while repo-swap is delegating an already redirected file open.")
@@ -618,9 +635,16 @@ value so it cannot become a stale fallback."
     (and name
          (string-match-p repo-swap-recentf-command-regexp name))))
 
+(defun repo-swap--explicit-recentf-command-p (function)
+  "Return non-nil when FUNCTION is a built-in or configured entry point."
+  (or (memq function repo-swap--builtin-recentf-command-functions)
+      (memq function repo-swap-recentf-command-functions)))
+
 (defun repo-swap--recentf-command-symbols ()
-  "Return loaded commands that should retain recentf origin state."
-  (let ((symbols (copy-sequence repo-swap-recentf-command-functions)))
+  "Return commands that should retain recentf origin state."
+  (let ((symbols
+         (append (copy-sequence repo-swap--builtin-recentf-command-functions)
+                 (copy-sequence repo-swap-recentf-command-functions))))
     (mapatoms
      (lambda (symbol)
        (when (and (fboundp symbol)
@@ -642,14 +666,57 @@ value so it cannot become a stale fallback."
                this-command origin))
     (apply original arguments)))
 
+(defun repo-swap--autoloaded-function-p (function)
+  "Return non-nil when FUNCTION is currently only an autoload stub."
+  (and (symbolp function)
+       (fboundp function)
+       (autoloadp (symbol-function function))))
+
+(defun repo-swap--ensure-command-definition (function)
+  "Ensure explicit recent-file FUNCTION has its final definition loaded.
+
+Advice attached only to an autoload stub can disappear when the defining
+library replaces that stub.  Explicit commands in
+`repo-swap-recentf-command-functions' are therefore loaded before advice is
+attached.  Automatically discovered commands are advised only after their
+libraries are already loaded."
+  (cond
+   ((not (and (symbolp function) (fboundp function))) nil)
+   ((not (repo-swap--autoloaded-function-p function)) t)
+   ((not (repo-swap--explicit-recentf-command-p function)) nil)
+   (t
+    (let ((autoload-definition (symbol-function function)))
+      (condition-case error-data
+          (progn
+            (autoload-do-load autoload-definition function)
+            (and (fboundp function)
+                 (not (repo-swap--autoloaded-function-p function))))
+        (error
+         (when repo-swap-debug
+           (message "repo-swap: could not load autoloaded command %S: %S"
+                    function error-data))
+         nil))))))
+
+(defun repo-swap--command-advice-status (function)
+  "Return a short integration status string for FUNCTION."
+  (cond
+   ((not (fboundp function)) "missing")
+   ((repo-swap--autoloaded-function-p function) "autoload-not-advised")
+   ((advice-member-p #'repo-swap--recentf-command-around function) "advised")
+   (t "loaded-not-advised")))
+
 (defun repo-swap--install-recentf-command-advice ()
-  "Advise all currently loaded recent-file entry commands."
-  (dolist (function (repo-swap--recentf-command-symbols))
-    (when (and (fboundp function)
-               (not (advice-member-p
-                     #'repo-swap--recentf-command-around function)))
-      (advice-add function :around #'repo-swap--recentf-command-around)
-      (push function repo-swap--advised-recentf-commands))))
+  "Load explicit entry commands as needed, then attach Repo Swap advice."
+  (unless repo-swap--installing-recentf-command-advice
+    (let ((repo-swap--installing-recentf-command-advice t))
+      (dolist (function (repo-swap--recentf-command-symbols))
+        (when (repo-swap--ensure-command-definition function)
+          (unless (advice-member-p
+                   #'repo-swap--recentf-command-around function)
+            (advice-add function :around #'repo-swap--recentf-command-around))
+          (when (advice-member-p
+                 #'repo-swap--recentf-command-around function)
+            (cl-pushnew function repo-swap--advised-recentf-commands)))))))
 
 (defun repo-swap--remove-recentf-command-advice ()
   "Remove command-level recentf origin advice installed by Repo Swap."
@@ -817,10 +884,14 @@ before the current recent-file command or dialog."
   (if (and repo-swap-mode repo-swap-integrate-recentf)
       (repo-swap--install-recentf-integration)
     (repo-swap--remove-recentf-integration))
-  (message "repo-swap recentf integration: %s"
-           (if (and repo-swap-mode repo-swap-integrate-recentf)
-               "enabled"
-             "disabled")))
+  (let ((enabled (and repo-swap-mode repo-swap-integrate-recentf)))
+    (message "repo-swap recentf integration: %s%s"
+             (if enabled "enabled" "disabled")
+             (if enabled
+                 (format " (ivy=%s)"
+                         (repo-swap--command-advice-status
+                          'ivy-switch-buffer))
+               ""))))
 
 ;;;###autoload
 (defun repo-swap-version ()
@@ -830,22 +901,53 @@ before the current recent-file command or dialog."
                      (locate-library "repo-swap")
                      "unknown"))
          (integration (and repo-swap-mode repo-swap-integrate-recentf))
-         (advised (delete-dups
-                   (copy-sequence repo-swap--advised-recentf-commands)))
+         (advised
+          (cl-remove-if-not
+           (lambda (function)
+             (and (fboundp function)
+                  (advice-member-p
+                   #'repo-swap--recentf-command-around function)))
+           (delete-dups
+            (append (copy-sequence repo-swap--advised-recentf-commands)
+                    (copy-sequence repo-swap--builtin-recentf-command-functions)
+                    (copy-sequence repo-swap-recentf-command-functions)))))
          (advised-count (length advised))
-         (ivy-loaded (fboundp 'ivy-switch-buffer))
-         (ivy-advised (and ivy-loaded
-                           (advice-member-p
-                            #'repo-swap--recentf-command-around
-                            'ivy-switch-buffer))))
+         (ivy-status (repo-swap--command-advice-status
+                      'ivy-switch-buffer)))
     (message "repo-swap %s (loaded from %s; recentf=%s; advised-commands=%d; ivy=%s)"
              repo-swap-version source
              (if integration "enabled" "disabled")
-             advised-count
-             (cond (ivy-advised "advised")
-                   (ivy-loaded "loaded-not-advised")
-                   (t "not-loaded")))
+             advised-count ivy-status)
     repo-swap-version))
+
+;;;###autoload
+(defun repo-swap-debug-integration ()
+  "Display detailed recentf and switch-buffer integration state."
+  (interactive)
+  (let ((source (or (symbol-file 'repo-swap-mode 'defun)
+                    (locate-library "repo-swap")
+                    "unknown")))
+    (with-output-to-temp-buffer "*Repo Swap Integration*"
+      (princ (format "Repo Swap %s\n" repo-swap-version))
+      (princ (format "Loaded from: %s\n" source))
+      (princ (format "repo-swap-mode: %S\n" repo-swap-mode))
+      (princ (format "repo-swap-integrate-recentf: %S\n"
+                     repo-swap-integrate-recentf))
+      (princ (format "ivy-use-virtual-buffers: %S\n\n"
+                     (and (boundp 'ivy-use-virtual-buffers)
+                          ivy-use-virtual-buffers)))
+      (dolist (function
+               (delete-dups
+                (append
+                 (copy-sequence repo-swap--builtin-recentf-command-functions)
+                 (copy-sequence repo-swap-recentf-command-functions))))
+        (princ (format "%-38S %s%s\n"
+                       function
+                       (repo-swap--command-advice-status function)
+                       (if (autoloadp (and (fboundp function)
+                                           (symbol-function function)))
+                           " (autoload stub)"
+                         "")))))))
 
 (defun repo-swap--git-string (root &rest args)
   "Run git in ROOT with ARGS and return trimmed output, or nil."

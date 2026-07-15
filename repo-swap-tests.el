@@ -437,9 +437,9 @@
 
 (ert-deftest repo-swap-test-version-command-reports-current-version ()
   "The interactive version command identifies the loaded build."
-  (should (equal repo-swap-version "0.1.8"))
+  (should (equal repo-swap-version "0.1.9"))
   (should (commandp 'repo-swap-version))
-  (should (equal (repo-swap-version) "0.1.8")))
+  (should (equal (repo-swap-version) "0.1.9")))
 
 
 (ert-deftest repo-swap-test-ivy-switch-buffer-is-explicit-integration-command ()
@@ -480,6 +480,51 @@
       (if had-function
           (fset 'ivy-switch-buffer old-function)
         (fmakunbound 'ivy-switch-buffer)))))
+
+
+
+(ert-deftest repo-swap-test-required-ivy-command-survives-older-custom-list ()
+  "An older customization cannot accidentally remove Ivy integration."
+  (let ((repo-swap-recentf-command-functions
+         '(consult-recent-file counsel-recentf helm-recentf)))
+    (should (memq 'ivy-switch-buffer
+                  (repo-swap--recentf-command-symbols)))
+    (should (repo-swap--explicit-recentf-command-p
+             'ivy-switch-buffer))))
+
+(ert-deftest repo-swap-test-installer-loads-autoload-before-advising ()
+  "Explicit autoloaded commands are loaded before advice is attached."
+  (let* ((sandbox (make-temp-file "repo-swap-autoload-test-" t))
+         (library-base (expand-file-name "repo-swap-fake-ivy" sandbox))
+         (library-file (concat library-base ".el"))
+         (command 'repo-swap-test-autoloaded-switch-buffer)
+         (repo-swap-recentf-command-functions (list command))
+         (repo-swap-recentf-command-regexp "\\`never-match\\'")
+         (repo-swap--advised-recentf-commands nil))
+    (unwind-protect
+        (progn
+          (with-temp-file library-file
+            (insert "(defun repo-swap-test-autoloaded-switch-buffer ()\n"
+                    "  (interactive)\n"
+                    "  'loaded)\n"))
+          (when (fboundp command)
+            (fmakunbound command))
+          (autoload command library-base nil t)
+          (should (repo-swap--autoloaded-function-p command))
+          (repo-swap--install-recentf-command-advice)
+          (should-not (repo-swap--autoloaded-function-p command))
+          (should (advice-member-p
+                   #'repo-swap--recentf-command-around command))
+          (should (equal (repo-swap--command-advice-status command)
+                         "advised")))
+      (when (fboundp command)
+        (advice-remove command #'repo-swap--recentf-command-around)
+        (fmakunbound command))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-debug-integration-is-an-interactive-command ()
+  "The detailed integration diagnostic is available through M-x."
+  (should (commandp 'repo-swap-debug-integration)))
 
 (provide 'repo-swap-tests)
 

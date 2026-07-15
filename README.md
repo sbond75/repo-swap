@@ -1,6 +1,6 @@
 # repo-swap.el
 
-Version 0.1.8
+Version 0.1.9
 
 `repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts, worktrees, or clones.
 
@@ -80,7 +80,11 @@ Then use:
           recentf-open-most-recent-file
           consult-recent-file
           counsel-recentf
-          helm-recentf))
+          helm-recentf
+          ivy-switch-buffer
+          ivy-switch-buffer-other-window
+          counsel-switch-buffer
+          counsel-switch-buffer-other-window))
 
   ;; Log command entry and origin/source/target decisions to *Messages*.
   (setq repo-swap-debug nil)
@@ -112,9 +116,12 @@ Then use:
   Choose a recent file and report the invoking root, source checkout, selected target, current `recentf-menu-action`, and whether redirection would occur.
 
 - `M-x repo-swap-version`  
-  Report the loaded Repo Swap version, exact source file, recentf integration state, and number of advised recent-file commands.
+  Report the loaded Repo Swap version, exact source file, recentf integration state, number of advised recent-file commands, and Ivy advice status.
 
-Ordinary `C-x b` remains unchanged.
+- `M-x repo-swap-debug-integration`  
+  Show detailed status for every built-in and configured recent-file/switch-buffer entry point, including whether it is missing, still an autoload stub, loaded without advice, or advised.
+
+Normal live-buffer choices from `C-x b` remain unchanged.  With Ivy virtual buffers and recentf integration enabled, recent-file choices from `C-x b` are Repo-Swap-aware.
 
 ## Recentf integration
 
@@ -162,8 +169,12 @@ Counsel, Helm, and similar front ends without changing ordinary file opens.
 
 Known entry points are listed in `repo-swap-recentf-command-functions`, and
 loaded interactive commands whose names match
-`repo-swap-recentf-command-regexp` are discovered automatically.  Add a custom
-front end to that list and refresh the integration when necessary.
+`repo-swap-recentf-command-regexp` are discovered automatically.  Required
+built-in adapters such as `ivy-switch-buffer` are always considered even when
+an older customization of `repo-swap-recentf-command-functions` omits them.
+Explicit autoloaded commands are loaded before advice is attached, preventing
+their real definition from replacing an advised autoload stub.  Add a custom
+front end to the configurable list and refresh the integration when necessary.
 
 If you change the setting after Repo Swap is already enabled:
 
@@ -215,8 +226,9 @@ Confirm the exact loaded build and path with:
 M-x repo-swap-version
 ```
 
-Version 0.1.8 also reports how many recent-file commands currently carry the
-origin-preserving advice.
+Version 0.1.9 reports only advice that is still attached to the current final
+function definitions.  Run `M-x repo-swap-debug-integration` for per-command
+status.
 
 ## Combined buffer/recent-file switcher
 
@@ -301,7 +313,7 @@ Repo Swap uses those loaded contexts when available and maintains its own lightw
 
 ## Running tests
 
-The suite now contains 24 ERT tests:
+The suite now contains 27 ERT tests:
 
 ```bat
 "C:\Users\user\Downloads\emacs-28.2\bin\emacs.exe" -Q --batch ^
@@ -311,6 +323,15 @@ The suite now contains 24 ERT tests:
 ```
 
 ## Changelog
+
+### 0.1.9
+
+- Fixed the use-package example accidentally overriding the newer default command list without Ivy switch-buffer entry points.
+- Treat Ivy and other required built-in integration entry points as mandatory even when an older user customization omits them.
+- Load explicit autoloaded commands before attaching advice so the final byte-compiled definition cannot replace an advised autoload stub.
+- Make `M-x repo-swap-version` count only advice still attached to current definitions and distinguish `autoload-not-advised` from `loaded-not-advised`.
+- Added `M-x repo-swap-debug-integration` for per-command diagnostics.
+- Added three regression tests, bringing the suite to 27 tests.
 
 ### 0.1.8
 
@@ -370,7 +391,7 @@ When `ivy-use-virtual-buffers` is non-nil, Ivy adds `recentf-list` entries to
 whose name contains `recentf`; Ivy's switch-buffer action resolves the virtual
 candidate and opens its stored file path itself.
 
-Repo Swap 0.1.8 explicitly wraps `ivy-switch-buffer` and
+Repo Swap explicitly wraps `ivy-switch-buffer` and
 `ivy-switch-buffer-other-window`, so the existing opt-in setting also applies
 to recent-file candidates selected from Ivy's `C-x b`:
 
@@ -389,6 +410,12 @@ After reloading while Ivy is already active, run:
 (repo-swap-version)
 ```
 
-The version message should report `ivy=advised`.  `ivy=not-loaded` is normal
-when Ivy has not been loaded yet; Repo Swap installs the advice when it loads.
-`ivy=loaded-not-advised` indicates that the integration needs refreshing.
+The version message should report `ivy=advised`.  Other statuses are:
+
+- `ivy=missing`: Ivy is unavailable.
+- `ivy=autoload-not-advised`: only the autoload stub exists; refresh should load and advise the final definition.
+- `ivy=loaded-not-advised`: Ivy is loaded but advice is missing.
+
+Version 0.1.9 protects required Ivy entry points from being removed by an older
+`repo-swap-recentf-command-functions` customization.  It also loads autoloaded
+entry points before attaching advice.
