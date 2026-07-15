@@ -130,6 +130,35 @@
          (root-a (expand-file-name "left/ShapeShift/" sandbox))
          (root-b (expand-file-name "right/ShapeShift/" sandbox))
          (file-a (expand-file-name "Assets/Lua/testmodule.lua" root-a))
+         (file-b (expand-file-name "Assets/Lua/testmodule.lua" root-b))
+         (repo-swap-show-root-in-mode-line t)
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return true\n")
+          (repo-swap-test--write-file file-b "return false\n")
+          (setq repo-swap--known-roots
+                (list (repo-swap--canonical-directory root-a)
+                      (repo-swap--canonical-directory root-b)))
+          (with-temp-buffer
+            (setq buffer-file-name file-a)
+            (setq-local repo-swap--buffer-root
+                        (repo-swap--canonical-directory root-a))
+            (should
+             (equal (repo-swap--mode-line-lighter)
+                    " RepoSwap[left/ShapeShift]"))))
+      (delete-directory sandbox t))))
+
+
+(ert-deftest repo-swap-test-mode-line-hides-root-label-without-peer-file ()
+  "The bracketed checkout label is absent when no known peer contains the file."
+  (let* ((sandbox (make-temp-file "repo-swap-test-" t))
+         (root-a (expand-file-name "left/ShapeShift/" sandbox))
+         (root-b (expand-file-name "right/ShapeShift/" sandbox))
+         (file-a (expand-file-name "Assets/Lua/testmodule.lua" root-a))
          (repo-swap-show-root-in-mode-line t)
          (repo-swap-remember-roots t)
          (repo-swap-extra-roots nil)
@@ -146,11 +175,39 @@
             (setq buffer-file-name file-a)
             (setq-local repo-swap--buffer-root
                         (repo-swap--canonical-directory root-a))
-            (should
-             (equal (repo-swap--mode-line-lighter)
-                    " RepoSwap[left/ShapeShift]"))))
+            (should (equal (repo-swap--mode-line-lighter)
+                           " RepoSwap"))))
       (delete-directory sandbox t))))
 
+(ert-deftest repo-swap-test-mode-line-disambiguates-only-among-peer-file-roots ()
+  "Known roots lacking the viewed file do not lengthen the checkout label."
+  (let* ((sandbox (make-temp-file "repo-swap-test-" t))
+         (root-a (expand-file-name "left/ShapeShift/" sandbox))
+         (stale-root (expand-file-name "right/ShapeShift/" sandbox))
+         (peer-root (expand-file-name "other/ShapeShift_featureWork/" sandbox))
+         (relative "Assets/Lua/testmodule.lua")
+         (file-a (expand-file-name relative root-a))
+         (peer-file (expand-file-name relative peer-root))
+         (repo-swap-show-root-in-mode-line t)
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return 'a'\n")
+          (repo-swap-test--write-file peer-file "return 'peer'\n")
+          (make-directory stale-root t)
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a stale-root peer-root)))
+          (with-temp-buffer
+            (setq buffer-file-name file-a)
+            (setq-local repo-swap--buffer-root
+                        (repo-swap--canonical-directory root-a))
+            (should (equal (repo-swap--mode-line-lighter)
+                           " RepoSwap[ShapeShift]"))))
+      (delete-directory sandbox t))))
 
 (ert-deftest repo-swap-test-recentf-target-redirects-into-preferred-root ()
   "A recent file in another known checkout redirects into the current root."

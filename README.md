@@ -1,6 +1,6 @@
 # repo-swap.el
 
-Version 0.1.4
+Version 0.1.5
 
 `repo-swap.el` is a small Emacs global minor mode for jumping between the same relative file in different local checkouts, worktrees, or clones.
 
@@ -158,13 +158,21 @@ Disable recent-file candidates while retaining the command as a buffer switcher:
 
 ## Mode-line checkout label
 
-File-visiting buffers show the current checkout beside `RepoSwap`, for example:
+The bracketed checkout label appears only when the currently viewed relative
+file exists in at least one other currently known checkout.  This makes the
+label a direct signal that the file is swappable right now:
 
 ```text
 RepoSwap[ShapeShift_featureWork]
 ```
 
-If checkout basenames collide, parent components are added until unique:
+When no other known checkout contains that file, the mode line simply shows:
+
+```text
+RepoSwap
+```
+
+If matching checkout basenames collide, parent components are added until unique:
 
 ```text
 RepoSwap[left/ShapeShift]
@@ -210,7 +218,7 @@ Repo Swap uses those loaded contexts when available and maintains its own lightw
 
 ## Running tests
 
-The suite now contains 12 ERT tests:
+The suite now contains 14 ERT tests:
 
 ```bat
 "C:\Users\user\Downloads\emacs-28.2\bin\emacs.exe" -Q --batch ^
@@ -220,6 +228,12 @@ The suite now contains 12 ERT tests:
 ```
 
 ## Changelog
+
+### 0.1.5
+
+- Show the bracketed checkout label only when the currently viewed relative file exists in another currently known checkout.
+- Disambiguate the label only against roots that contain that same file.
+- Added ERT coverage for absent peer files and stale same-basename roots.
 
 ### 0.1.4
 

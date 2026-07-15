@@ -1,6 +1,6 @@
 ;;; repo-swap.el --- Jump to the same relative file in another checkout -*- lexical-binding: t; -*-
 
-;; Version: 0.1.4
+;; Version: 0.1.5
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: files, convenience, vc
 
@@ -98,9 +98,11 @@ Avoid large values near drive roots because that can be noisy and slow."
 (defcustom repo-swap-show-root-in-mode-line t
   "When non-nil, show the current checkout's unique directory name in the mode line.
 
-The label starts with the checkout directory's basename.  If another known
-checkout has the same basename, parent directory components are prepended until
-the label is unique, for example `[worktrees/ShapeShift]'."
+The bracketed label is shown only when the currently visited relative file also
+exists in at least one other currently known checkout.  The label starts with
+the checkout directory's basename.  If another matching checkout has the same
+basename, parent directory components are prepended until the label is unique,
+for example `[worktrees/ShapeShift]'."
   :type 'boolean
   :group 'repo-swap)
 
@@ -376,6 +378,27 @@ included."
         repo-swap--known-roots)
       (repo-swap--modpatch-context-roots))))))
 
+(defun repo-swap--mode-line-peer-roots (current-file current-root)
+  "Return known roots other than CURRENT-ROOT containing CURRENT-FILE's relative path.
+
+Only inexpensive currently known roots are considered: remembered roots,
+`repo-swap-extra-roots', and loaded ModPatch contexts.  Sibling directories are
+not scanned during mode-line redisplay."
+  (when (and current-file current-root
+             (file-exists-p current-file)
+             (ignore-errors
+               (repo-swap--path-under-root-p current-file current-root)))
+    (let* ((relative (repo-swap--relative-name current-file current-root))
+           (current-canonical (repo-swap--canonical-file current-file))
+           peers)
+      (dolist (root (repo-swap--mode-line-known-roots current-root))
+        (let ((target (expand-file-name relative root)))
+          (when (and (file-exists-p target)
+                     (not (string-equal current-canonical
+                                        (repo-swap--canonical-file target))))
+            (push root peers))))
+      (delete-dups peers))))
+
 (defun repo-swap--root-components (root)
   "Return ROOT's path components from outermost to innermost.
 
@@ -448,16 +471,19 @@ prepended one at a time until the label differs from every other root."
   "Return the dynamic mode-line lighter for `repo-swap-mode'."
   (let ((base " RepoSwap"))
     (if (and repo-swap-show-root-in-mode-line buffer-file-name)
-        (let ((root (or repo-swap--buffer-root
-                        (progn
-                          (repo-swap--refresh-buffer-root)
-                          repo-swap--buffer-root))))
-          (if root
+        (let* ((root (or repo-swap--buffer-root
+                         (progn
+                           (repo-swap--refresh-buffer-root)
+                           repo-swap--buffer-root)))
+               (peer-roots (and root
+                                (repo-swap--mode-line-peer-roots
+                                 buffer-file-name root))))
+          (if peer-roots
               (format "%s[%s]"
                       base
                       (repo-swap--unique-root-label
                        root
-                       (repo-swap--mode-line-known-roots root)))
+                       (cons root peer-roots)))
             base))
       base)))
 
