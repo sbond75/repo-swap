@@ -1,6 +1,6 @@
 ;;; repo-swap.el --- Jump to the same relative file in another checkout -*- lexical-binding: t; -*-
 
-;; Version: 0.1.10
+;; Version: 0.1.11
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: files, convenience, vc
 
@@ -15,6 +15,9 @@
 ;; ModPatch integration is optional.  When ModPatch v2 is loaded, repo-swap
 ;; can use loaded ModPatch contexts as known roots, and a current ModPatch
 ;; buffer's context root takes priority over generic project/git discovery.
+;;
+;; The public equivalent-file helpers are intentionally usable by optional
+;; companion packages such as GhostGrid even when `repo-swap-mode' is off.
 
 ;;; Code:
 
@@ -28,7 +31,7 @@
   :group 'files
   :prefix "repo-swap-")
 
-(defconst repo-swap-version "0.1.10"
+(defconst repo-swap-version "0.1.11"
   "Current repo-swap package version.")
 
 (defcustom repo-swap-kill-old-buffer nil
@@ -436,7 +439,7 @@ This resolves Windows short names, symlinks and case quirks where possible."
       (when repo-swap-remember-roots
         repo-swap--known-roots)
       (repo-swap--modpatch-context-roots)
-      (when repo-swap-include-sibling-roots
+      (when (and repo-swap-include-sibling-roots current-root)
         (repo-swap--sibling-roots current-root)))))))
 
 (defun repo-swap--mode-line-known-roots (current-root)
@@ -991,6 +994,88 @@ before the current recent-file command or dialog."
           (lambda (a b)
             (string-lessp (plist-get a :root)
                           (plist-get b :root))))))
+
+(defun repo-swap--vc-root-for-file (file)
+  "Return the VC root containing FILE, or nil."
+  (when (fboundp 'vc-root-dir)
+    (let ((default-directory (file-name-directory (expand-file-name file))))
+      (let ((root (ignore-errors (vc-root-dir))))
+        (when root
+          (repo-swap--safe-canonical-directory root))))))
+
+;;;###autoload
+(defun repo-swap-root-for-file (file)
+  "Return the best known checkout/project root containing FILE, or nil.
+
+Unlike `repo-swap-current-root', this function does not require FILE to be the
+current buffer and does not signal when no root can be determined.  It is part
+of Repo Swap's integration API for companion packages."
+  (when file
+    (let* ((expanded (expand-file-name file))
+           (visiting (get-file-buffer expanded)))
+      (or (when (buffer-live-p visiting)
+            (with-current-buffer visiting
+              (repo-swap--current-root-noerror)))
+          (repo-swap--nearest-marker-root expanded)
+          (repo-swap--project-root expanded)
+          (repo-swap--vc-root-for-file expanded)
+          (repo-swap--longest-containing-root
+           expanded
+           (repo-swap--all-known-roots nil))))))
+
+;;;###autoload
+(defun repo-swap-equivalent-files (file &optional include-current)
+  "Return existing same-relative FILE copies in known checkout roots.
+
+When INCLUDE-CURRENT is non-nil, include FILE itself if it exists.  Otherwise
+only peer checkout copies are returned.  The function uses the same remembered,
+extra, ModPatch, and optional sibling roots as Repo Swap's interactive command,
+but does not open any files or require `repo-swap-mode' to be enabled."
+  (let* ((expanded (expand-file-name file))
+         (root (repo-swap-root-for-file expanded)))
+    (when root
+      (let* ((relative (repo-swap--relative-name expanded root))
+             (current (and (file-exists-p expanded)
+                           (repo-swap--canonical-file expanded)))
+             files)
+        (dolist (candidate-root (repo-swap--all-known-roots root))
+          (let ((candidate (expand-file-name relative candidate-root)))
+            (when (file-exists-p candidate)
+              (let ((canonical (repo-swap--canonical-file candidate)))
+                (when (or include-current
+                          (null current)
+                          (not (string-equal canonical current)))
+                  (push canonical files))))))
+        (sort (delete-dups files) #'string-lessp)))))
+
+;;;###autoload
+(defun repo-swap-map-file-to-reference-checkout
+    (file source-reference-file target-reference-file)
+  "Map FILE from SOURCE-REFERENCE-FILE's checkout to TARGET-REFERENCE-FILE's.
+
+When FILE lies beneath the source reference's checkout root, return the same
+relative path beneath the target reference's checkout root, but only if that
+target file exists.  When FILE is outside the source checkout, treat it as an
+intentional external path and return the original file if it exists.  Return nil
+when a checkout-local counterpart is required but absent.
+
+This function does not modify buffers and is intended for companion packages
+that need to translate persisted absolute paths across equivalent checkouts."
+  (let* ((expanded-file (expand-file-name file))
+         (source-root (repo-swap-root-for-file source-reference-file))
+         (target-root (repo-swap-root-for-file target-reference-file)))
+    (cond
+     ((and source-root
+           (ignore-errors
+             (repo-swap--path-under-root-p expanded-file source-root)))
+      (when target-root
+        (let* ((relative (repo-swap--relative-name expanded-file source-root))
+               (target (expand-file-name relative target-root)))
+          (when (file-exists-p target)
+            (repo-swap--canonical-file target)))))
+     ((file-exists-p expanded-file)
+      (repo-swap--canonical-file expanded-file))
+     (t nil))))
 
 (defun repo-swap--completion-table (candidates)
   "Return completion table alist for CANDIDATES."

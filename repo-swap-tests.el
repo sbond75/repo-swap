@@ -437,9 +437,9 @@
 
 (ert-deftest repo-swap-test-version-command-reports-current-version ()
   "The interactive version command identifies the loaded build."
-  (should (equal repo-swap-version "0.1.9"))
+  (should (equal repo-swap-version "0.1.11"))
   (should (commandp 'repo-swap-version))
-  (should (equal (repo-swap-version) "0.1.9")))
+  (should (equal (repo-swap-version) "0.1.11")))
 
 
 (ert-deftest repo-swap-test-ivy-switch-buffer-is-explicit-integration-command ()
@@ -537,6 +537,274 @@
     (repo-swap--install-key-bindings)
     (should (eq (lookup-key repo-swap-mode-map (kbd "C-c b"))
                 #'repo-swap-switch-buffer-or-recentf))))
+
+;;; Repo Swap public integration API tests
+
+(ert-deftest repo-swap-test-root-for-file-uses-known-root-with-mode-disabled ()
+  "The companion API resolves a file without requiring `repo-swap-mode'."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root (expand-file-name "checkout/" sandbox))
+         (file (expand-file-name "Assets/Lua/test.lua" root))
+         (repo-swap-mode nil)
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file "return true\n")
+          (setq repo-swap--known-roots
+                (list (repo-swap--canonical-directory root)))
+          (should
+           (repo-swap--same-file-name-p
+            (repo-swap-root-for-file file)
+            root)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-root-for-file-prefers-deepest-known-root ()
+  "Nested known roots resolve to the deepest checkout containing the file."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (outer (expand-file-name "outer/" sandbox))
+         (inner (expand-file-name "nested/" outer))
+         (file (expand-file-name "Assets/Lua/test.lua" inner))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file "return true\n")
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list outer inner)))
+          (should
+           (repo-swap--same-file-name-p
+            (repo-swap-root-for-file file)
+            inner)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-equivalent-files-excludes-current-by-default ()
+  "Equivalent-file lookup returns peer copies but not the queried copy."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (relative "Assets/Lua/test.lua")
+         (file-a (expand-file-name relative root-a))
+         (file-b (expand-file-name relative root-b))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return 'a'\n")
+          (repo-swap-test--write-file file-b "return 'b'\n")
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (let ((files (repo-swap-equivalent-files file-a)))
+            (should (= (length files) 1))
+            (should (repo-swap--same-file-name-p (car files) file-b))
+            (should-not
+             (cl-some (lambda (file)
+                        (repo-swap--same-file-name-p file file-a))
+                      files))))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-equivalent-files-can-include-current ()
+  "INCLUDE-CURRENT includes the queried copy alongside its peers."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (relative "Assets/Lua/test.lua")
+         (file-a (expand-file-name relative root-a))
+         (file-b (expand-file-name relative root-b))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return 'a'\n")
+          (repo-swap-test--write-file file-b "return 'b'\n")
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (let ((files (repo-swap-equivalent-files file-a t)))
+            (should (= (length files) 2))
+            (should
+             (cl-some (lambda (file)
+                        (repo-swap--same-file-name-p file file-a))
+                      files))
+            (should
+             (cl-some (lambda (file)
+                        (repo-swap--same-file-name-p file file-b))
+                      files))))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-equivalent-files-ignores-root-without-relative-file ()
+  "Known roots that lack the requested relative file are not returned."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (root-c (expand-file-name "c/" sandbox))
+         (relative "Assets/Lua/test.lua")
+         (file-a (expand-file-name relative root-a))
+         (file-b (expand-file-name relative root-b))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "return 'a'\n")
+          (repo-swap-test--write-file file-b "return 'b'\n")
+          (make-directory root-c t)
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b root-c)))
+          (let ((files (repo-swap-equivalent-files file-a)))
+            (should (= (length files) 1))
+            (should (repo-swap--same-file-name-p (car files) file-b))))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-equivalent-files-does-not-require-global-mode ()
+  "The public equivalent-file API remains usable while Repo Swap mode is off."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (relative "same/file.lua")
+         (file-a (expand-file-name relative root-a))
+         (file-b (expand-file-name relative root-b))
+         (repo-swap-mode nil)
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (repo-swap-test--write-file file-a "a\n")
+          (repo-swap-test--write-file file-b "b\n")
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (let ((files (repo-swap-equivalent-files file-a)))
+            (should (= (length files) 1))
+            (should (repo-swap--same-file-name-p (car files) file-b))))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-map-file-to-reference-checkout-translates-local-file ()
+  "A checkout-local path is translated to the corresponding target path."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (reference-relative "Assets/Lua/sidecar.lua")
+         (base-relative "Assets/Lua/base.lua")
+         (reference-a (expand-file-name reference-relative root-a))
+         (reference-b (expand-file-name reference-relative root-b))
+         (base-a (expand-file-name base-relative root-a))
+         (base-b (expand-file-name base-relative root-b))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (dolist (file (list reference-a reference-b base-a base-b))
+            (repo-swap-test--write-file file "x\n"))
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (should
+           (repo-swap--same-file-name-p
+            (repo-swap-map-file-to-reference-checkout
+             base-a reference-a reference-b)
+            base-b)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-map-file-to-reference-checkout-requires-target-counterpart ()
+  "A checkout-local mapping returns nil when the target counterpart is absent."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (reference-a (expand-file-name "sidecar.lua" root-a))
+         (reference-b (expand-file-name "sidecar.lua" root-b))
+         (base-a (expand-file-name "base.lua" root-a))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (dolist (file (list reference-a reference-b base-a))
+            (repo-swap-test--write-file file "x\n"))
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (should-not
+           (repo-swap-map-file-to-reference-checkout
+            base-a reference-a reference-b)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-map-file-to-reference-checkout-preserves-external-file ()
+  "An existing path outside the source checkout remains unchanged."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (reference-a (expand-file-name "sidecar.lua" root-a))
+         (reference-b (expand-file-name "sidecar.lua" root-b))
+         (external (expand-file-name "shared/external.lua" sandbox))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (dolist (file (list reference-a reference-b external))
+            (repo-swap-test--write-file file "x\n"))
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (should
+           (repo-swap--same-file-name-p
+            (repo-swap-map-file-to-reference-checkout
+             external reference-a reference-b)
+            external)))
+      (delete-directory sandbox t))))
+
+(ert-deftest repo-swap-test-map-file-to-reference-checkout-rejects-missing-external-file ()
+  "A missing path outside the source checkout is not fabricated."
+  (let* ((sandbox (make-temp-file "repo-swap-api-test-" t))
+         (root-a (expand-file-name "a/" sandbox))
+         (root-b (expand-file-name "b/" sandbox))
+         (reference-a (expand-file-name "sidecar.lua" root-a))
+         (reference-b (expand-file-name "sidecar.lua" root-b))
+         (external (expand-file-name "shared/missing.lua" sandbox))
+         (repo-swap-remember-roots t)
+         (repo-swap-extra-roots nil)
+         (repo-swap-include-sibling-roots nil)
+         (repo-swap-use-modpatch-contexts nil)
+         (repo-swap--known-roots nil))
+    (unwind-protect
+        (progn
+          (dolist (file (list reference-a reference-b))
+            (repo-swap-test--write-file file "x\n"))
+          (setq repo-swap--known-roots
+                (mapcar #'repo-swap--canonical-directory
+                        (list root-a root-b)))
+          (should-not
+           (repo-swap-map-file-to-reference-checkout
+            external reference-a reference-b)))
+      (delete-directory sandbox t))))
 
 (provide 'repo-swap-tests)
 
